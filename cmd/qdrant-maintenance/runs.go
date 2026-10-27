@@ -20,6 +20,9 @@ func (a *application) runs(ctx context.Context, args []string) error {
 		a.help(ctx, usage)
 		return nil
 	}
+	if args[0] == "cleanup" {
+		return a.recoverRun(ctx, args[1:], true)
+	}
 	if args[0] == "retry" {
 		return a.recoverRun(ctx, args[1:], false)
 	}
@@ -167,6 +170,10 @@ func (a *application) recoverRun(ctx context.Context, args []string, cleanup boo
 	engine := runs.Engine{Repo: repo, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
 		return topology.Inspect(ctx, endpoints, record.Manifest.Scope)
 	}}
-	_, err = engine.Retry(ctx, id, *takeover)
+	if cleanup {
+		_, err = engine.Cleanup(ctx, id, *takeover)
+	} else {
+		_, err = engine.Retry(ctx, id, *takeover)
+	}
 	return err
 }

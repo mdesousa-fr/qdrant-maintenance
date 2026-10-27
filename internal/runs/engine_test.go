@@ -143,3 +143,34 @@ func TestRetryMissingNamedSourceIsNotReplaced(t *testing.T) {
 		t.Fatalf("manifest=%+v error=%v", m, err)
 	}
 }
+
+func TestCleanupRequiresHealthyStoredCopyAndIsIdempotent(t *testing.T) {
+	for _, healthy := range []bool{true, false} {
+		t.Run(fmt.Sprint(healthy), func(t *testing.T) {
+			ctx := context.Background()
+			store := newStore()
+			engine, _, deleted := testEngine(t, store)
+			m, err := engine.Create(ctx, New("run", "test", "", inventory(), true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !healthy {
+				delete(store.details, m.Entries[0].Key)
+			}
+			m, err = engine.Cleanup(ctx, "run", false)
+			if (err == nil) != healthy {
+				t.Fatal(err)
+			}
+			if healthy {
+				if *deleted != 1 || !m.Entries[0].SourceDeleted {
+					t.Fatal(m)
+				}
+				if _, err := engine.Cleanup(ctx, "run", false); err != nil || *deleted != 1 {
+					t.Fatalf("cleanup repeated: %d %v", *deleted, err)
+				}
+			} else if *deleted != 0 {
+				t.Fatal("removed only remaining source")
+			}
+		})
+	}
+}

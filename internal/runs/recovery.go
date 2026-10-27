@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/qdrant"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
 )
 
@@ -71,3 +72,60 @@ func (s recoveryUpload) Upload(ctx context.Context, key string, file *os.File, s
 }
 
 var _ backup.Storage = recoveryUpload{}
+
+// Cleanup removes only recorded Qdrant sources with healthy committed S3 copies.
+// Explicit cleanup overrides the original keep-source preference.
+func (e Engine) Cleanup(ctx context.Context, id string, takeover bool) (manifest Manifest, err error) {
+	record, err := e.loadRecovery(ctx, id, takeover)
+	if err != nil {
+		return record.Manifest, err
+	}
+	if err := e.Repo.Claim(ctx, &record, takeover); err != nil {
+		return record.Manifest, err
+	}
+	defer func() {
+		record.Manifest.Writer = ""
+		record.Manifest.Error = ""
+		if err != nil {
+			record.Manifest.Error = err.Error()
+		}
+		if saveErr := e.save(ctx, &record); saveErr != nil {
+			err = errors.Join(err, saveErr)
+		}
+		manifest = record.Manifest
+	}()
+	var errs []error
+	for i := range record.Manifest.Entries {
+		entry := &record.Manifest.Entries[i]
+		if entry.SourceDeleted {
+			continue
+		}
+		if !entry.Stored || entry.Deleted || entry.Snapshot == nil {
+			e.Logger.InfoContext(ctx, "source cleanup skipped", "event", "source.cleanup_skipped", "node", entry.Node, "collection", entry.Collection, "reason", "no verified S3 copy")
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return record.Manifest, errors.Join(append(errs, err)...)
+		}
+		if checkErr := CheckObject(ctx, e.Store, *entry); checkErr != nil {
+			entry.VerifyError = checkErr.Error()
+			record.Manifest.State = "incomplete"
+			errs = append(errs, checkErr)
+			continue
+		}
+		deleteErr := e.Clients[entry.Node].DeleteSnapshot(ctx, entry.Collection, entry.Snapshot.Name)
+		var status *qdrant.HTTPError
+		if deleteErr != nil && !(errors.As(deleteErr, &status) && status.StatusCode == 404) {
+			entry.Error = deleteErr.Error()
+			errs = append(errs, deleteErr)
+			continue
+		}
+		entry.SourceDeleted = true
+		entry.Error = ""
+		if saveErr := e.save(ctx, &record); saveErr != nil {
+			return record.Manifest, errors.Join(append(errs, saveErr)...)
+		}
+		e.Logger.InfoContext(ctx, "source snapshot cleaned up", "event", "source.cleaned", "node", entry.Node, "collection", entry.Collection, "key", entry.Key)
+	}
+	return record.Manifest, errors.Join(errs...)
+}

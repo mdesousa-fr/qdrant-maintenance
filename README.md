@@ -322,3 +322,10 @@ Reservations detect competing recovery processes. After confirming an interrupte
 writer has terminated, `runs retry --takeover <run_id>` can acquire its reservation
 with an ETag check. A run's original start time is preserved. Freshness and run
 retention use run start time so retrying old data cannot make it appear new.
+
+`runs cleanup <run_id>` explicitly cleans recorded source snapshots, including
+runs created with `--keep-source`. Each candidate must still have a healthy,
+verified S3 copy; absent/unverified copies are never a basis for Qdrant deletion.
+Already-cleaned sources are skipped, and Qdrant 404 responses are treated as
+idempotent success. Failures remain recorded and can be retried. The same explicit
+`--takeover` rule applies to interrupted writer reservations.
