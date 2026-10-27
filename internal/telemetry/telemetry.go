@@ -196,3 +196,8 @@ func Deleted(ctx context.Context) {
 	c, _ := otel.Meter(scope).Int64Counter("qdrant_maintenance.retention.deleted")
 	c.Add(ctx, 1)
 }
+
+func BackupAge(ctx context.Context, seconds float64) {
+	g, _ := otel.Meter(scope).Float64Gauge("qdrant_maintenance.backup.age", metric.WithUnit("s"))
+	g.Record(ctx, seconds)
+}

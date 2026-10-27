@@ -1,0 +1,52 @@
+# Run independently of backup creation, and alert on failed/missing check Jobs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qdrant-backup-freshness
+spec:
+  schedule: "0 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          serviceAccountName: qdrant-maintenance
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          containers:
+            - name: freshness
+              image: your-registry/qdrant-maintenance:1.0.0
+              args: ["runs", "check", "--max-age", "26h"]
+              env:
+                - name: QDRANT_NODES
+                  value: '{"qdrant-0":"http://qdrant-0.qdrant-headless:6333","qdrant-1":"http://qdrant-1.qdrant-headless:6333","qdrant-2":"http://qdrant-2.qdrant-headless:6333"}'
+                - name: QDRANT_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: qdrant-maintenance
+                      key: qdrant-api-key
+                - name: S3_BUCKET
+                  value: your-cluster-snapshots
+                - name: AWS_REGION
+                  value: eu-west-1
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: http://otel-collector:4318
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: "1"
+                  memory: 256Mi

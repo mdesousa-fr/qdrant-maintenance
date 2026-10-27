@@ -266,3 +266,18 @@ still leave an unrecorded source snapshot; inspect its logs before manual cleanu
 `runs list` logs manifest state and timestamps without requiring Qdrant access.
 Backup completeness is independent of source-cleanup success. A fully stored run
 can be `complete` while reporting cleanup errors and returning a nonzero status.
+
+### Backup freshness
+
+`runs check --max-age 26h` validates current cluster coverage, finds the latest
+complete whole-cluster run, and checks its age and required S3 object metadata.
+Use `--collection documents` to check that collection across all peers; a complete
+whole-cluster run can satisfy that check. Missing objects, recorded content
+verification failures, stale runs, or absent coverage return a nonzero status.
+The command does not fall back to an older run when the latest qualifying run is
+damaged. `qdrant_maintenance.backup.age` records the healthy run's age in seconds.
+
+[deploy/freshness-cronjob.yaml](deploy/freshness-cronjob.yaml) runs this check
+independently, so a backup job that never starts still becomes detectable. Alert
+on failed or missing freshness-check Jobs as well as backup failures. Checks
+require access to Qdrant for current membership and S3 for durable state.
