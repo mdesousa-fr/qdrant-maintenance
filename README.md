@@ -7,7 +7,7 @@ JSON logs on stderr. stdout stays empty. OpenTelemetry exports remain available.
 
 ## Build and test
 
-Requires Go 1.26 or newer.
+Requires Go 1.26.10 or newer (patched toolchain).
 
 ```sh
 go build -o bin/qdrant-maintenance ./cmd/qdrant-maintenance
@@ -38,7 +38,8 @@ process environment; it does not automatically load `.env` files.
 | `S3_FORCE_PATH_STYLE` | Boolean; defaults to `true` for custom endpoints and `false` for AWS. |
 | `AWS_REGION` | AWS region; falls back to `AWS_DEFAULT_REGION` and the SDK configuration chain. |
 | `S3_TIMEOUT` | Positive duration per storage operation, including upload and verification; default `30m`. |
-| `RETENTION_KEEP_LAST` | Nonnegative count retained per collection/node; default `5`. |
+| `RETENTION_POLICY` | `snapshot` (default) or `run` for complete manifest-backed sets. |
+| `RETENTION_KEEP_LAST` | Nonnegative count per collection/node (`snapshot`) or complete runs per coverage group (`run`); default `5`. |
 | `LOG_LEVEL` | Case-insensitive `DEBUG`, `INFO` (default), `WARN`, or `ERROR`. Applies to stderr and OpenTelemetry logs. |
 | `TMPDIR` | Directory for temporary snapshot files; defaults to the OS temporary directory. |
 
@@ -143,9 +144,9 @@ Failed downloads, checksum validation, uploads, or S3 verification retain the
 Qdrant snapshot. A cleanup failure reports that the backup is stored while
 returning a failure status. Backup attempts continue for other collections/nodes
 after ordinary failures. SIGTERM/SIGINT cancels outstanding work and stops new
-attempts. Re-running a failed command creates fresh snapshots; it does not resume
-previous Qdrant snapshots or multipart uploads. Failed source snapshots can be
-removed manually after investigation.
+attempts. Re-running `snapshots create` starts a fresh run; `runs retry <run_id>`
+resumes recorded source snapshots. Multipart uploads themselves are restarted.
+Unrecorded source snapshots require investigation before manual cleanup.
 
 Exit status is `0` for success and `1` for configuration, operation, cancellation,
 or telemetry shutdown errors. Each backup attempt emits a `backup completed` or
@@ -242,7 +243,8 @@ restorable Qdrant backups. They are not used by the unit test suite.
 
 ## Operational event schema
 
-Command events include a stable `event` identifier and a `run_id`. Backup runs
+Command events include a stable `event` identifier and an `execution_id`. Backup
+creation and recovery events also carry the persistent `run_id`. Backup runs
 emit `backup.run_summary` with expected, successful, failed, skipped, and source
 cleanup failure counts, uploaded bytes, duration, outcome, and completeness.
 Identifiers are log attributes, never custom metric labels.
@@ -349,3 +351,19 @@ are logged but have no manifest in which to persist health. Verification perform
 no Qdrant requests. It reserves manifests while updating verification records;
 `--takeover` is available only after the previous writer has terminated. It never
 overrides an active pruning/expired state or repairs objects automatically.
+
+## Release automation
+
+Main-branch/PR checks run offline unit tests, race checks, static analysis, builds,
+and a separate online `govulncheck` scan. Tagged stable versions (`vMAJOR.MINOR.PATCH`)
+run the same checks before building static Linux AMD64 and ARM64 archives and a
+multi-architecture image. The workflow publishes checksummed archives to GitHub
+Releases and the image to `ghcr.io/<owner>/<repository>:<version>` using
+`GITHUB_TOKEN`. Repository Actions/package permissions must permit publication.
+The CLI's version event includes `git_commit`; release builds embed both fields.
+
+`scripts/build-release.sh v1.1.0 <git-sha> amd64 dist` prepares an archive locally
+without publishing anything. Docker builds accept `VERSION` and `GIT_COMMIT`
+build arguments. Creating/pushing a version tag triggers publication; ordinary
+main-branch commits do not. No release tag or registry publication is created as
+part of implementing these workflows.

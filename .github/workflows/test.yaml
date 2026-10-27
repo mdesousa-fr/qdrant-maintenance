@@ -1,16 +1,32 @@
-name: Unit tests
-on: [push, pull_request]
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal)"
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/qdrant-maintenance
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Scan reachable vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

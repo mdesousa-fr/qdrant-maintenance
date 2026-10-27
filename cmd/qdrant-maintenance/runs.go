@@ -12,7 +12,7 @@ import (
 )
 
 func (a *application) runs(ctx context.Context, args []string) error {
-	const usage = "qdrant-maintenance runs list | runs check --max-age <duration> [--collection <name>]"
+	const usage = "qdrant-maintenance runs list | check --max-age <duration> [--collection <name>] | retry|cleanup [--takeover] <run_id> | expire --older-than <duration> [--apply] [--takeover]"
 	if len(args) == 0 {
 		return fmt.Errorf("runs action is required")
 	}

@@ -26,7 +26,8 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
 )
 
-const version = "1.0.0"
+var version = "1.0.0"
+var gitCommit = "development"
 
 func main() { os.Exit(mainExit()) }
 func mainExit() int {
@@ -133,7 +134,7 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 		if fs.NArg() > 0 {
 			return fmt.Errorf("too many arguments")
 		}
-		a.logger.InfoContext(ctx, "application version", "event", "application.version", "version", version)
+		a.logger.InfoContext(ctx, "application version", "event", "application.version", "version", version, "git_commit", gitCommit)
 		return nil
 	case "collections":
 		return a.collections(ctx, args)
@@ -262,7 +263,7 @@ func (a *application) retention(ctx context.Context, args []string) error {
 	return nil
 }
 func (a *application) snapshots(ctx context.Context, args []string) error {
-	const usage = "qdrant-maintenance snapshots list <collection> | snapshots create [--all | <collection>] [--keep-source] (flags before collection)"
+	const usage = "qdrant-maintenance snapshots list <collection> | snapshots create [--all | <collection>] [--keep-source] | snapshots verify --run <run_id> | --collection <name> --node <node> (flags before collection)"
 	if len(args) == 0 {
 		return fmt.Errorf("snapshots action is required")
 	}

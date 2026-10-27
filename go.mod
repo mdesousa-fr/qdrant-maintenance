@@ -1,6 +1,6 @@
 module github.com/mdesousa-fr/qdrant-maintenance
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.5
@@ -48,7 +48,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
