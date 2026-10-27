@@ -290,3 +290,19 @@ complete runs by cluster peer membership and collection scope, keeping the newes
 corrupt runs remain protected and do not replace healthy retained runs. Objects
 without manifests are unmanaged by run retention. Different historical peer sets
 remain separate groups so a topology change does not silently discard their sets.
+
+Use `RETENTION_POLICY=run qdrant-maintenance retention plan` before applying the
+policy. Apply verifies retained runs' objects, reserves candidates with conditional
+manifest writes, and rechecks manifest revisions before deletion. Shared keys
+referenced by protected runs are preserved. Deletion progress is checkpointed;
+partial failures remain `pruning` and can be retried by rebuilding/applying a plan.
+Do not mix snapshot and run retention jobs against the same backup history:
+snapshot retention can remove members of otherwise complete runs.
+
+Incomplete runs never expire automatically. Preview with
+`runs expire --older-than 168h`, then add `--apply` to remove their verified S3
+uploads. Complete runs, other protected references, unmanaged objects, unverified
+uploads, and Qdrant sources are not deleted by expiry. Expired/pruned manifests
+remain as audit records. An interrupted process may leave a writer reservation;
+use `--takeover` on apply/expiry only after ensuring the previous process has
+terminated. ETag checks still reject concurrent state changes.

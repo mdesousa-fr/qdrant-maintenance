@@ -2,6 +2,8 @@ package runs
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -56,5 +58,76 @@ func TestExpiryRequiresAgeAndNeverSelectsCompleteRuns(t *testing.T) {
 	plan, err := PlanExpiry(context.Background(), Repository{Store: store}, 24*time.Hour, time.Now())
 	if err != nil || len(plan.Candidates) != 1 || plan.Candidates[0].Manifest.ID != "old" {
 		t.Fatalf("plan=%+v error=%v", plan, err)
+	}
+}
+
+func TestRunPruningAndPartialFailureRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := newStore()
+	repo := Repository{Store: store}
+	now := time.Now()
+	old := completeRecord(t, store, "old", now.Add(-time.Hour))
+	completeRecord(t, store, "new", now)
+	plan, err := PlanRetention(ctx, repo, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.deleteError = fmt.Errorf("denied")
+	if err := plan.Apply(ctx, repo, slog.Default(), false); err == nil {
+		t.Fatal("delete failure ignored")
+	}
+	record, err := repo.Load(ctx, "old")
+	if err != nil || record.Manifest.State != "pruning" || record.Manifest.Writer != "" {
+		t.Fatalf("record=%+v err=%v", record, err)
+	}
+	store.deleteError = nil
+	plan, err = PlanRetention(ctx, repo, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Apply(ctx, repo, slog.Default(), false); err != nil {
+		t.Fatal(err)
+	}
+	record, err = repo.Load(ctx, "old")
+	if err != nil || record.Manifest.State != "pruned" {
+		t.Fatalf("record=%+v err=%v", record, err)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != old.Manifest.Entries[0].Key {
+		t.Fatal(store.deleted)
+	}
+}
+func TestPruningStopsForStaleInventoryOrDamagedRetainedRun(t *testing.T) {
+	for _, damage := range []string{"changed", "missing", "cancelled"} {
+		t.Run(damage, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStore()
+			repo := Repository{Store: store}
+			now := time.Now()
+			completeRecord(t, store, "old", now.Add(-time.Hour))
+			newer := completeRecord(t, store, "new", now)
+			plan, err := PlanRetention(ctx, repo, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch damage {
+			case "changed":
+				newer.Manifest.Error = "changed"
+				if err := repo.Save(ctx, &newer); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				delete(store.details, newer.Manifest.Entries[0].Key)
+			case "cancelled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if err := plan.Apply(ctx, repo, slog.Default(), false); err == nil {
+				t.Fatal("unsafe plan applied")
+			}
+			if len(store.deleted) != 0 {
+				t.Fatal(store.deleted)
+			}
+		})
 	}
 }

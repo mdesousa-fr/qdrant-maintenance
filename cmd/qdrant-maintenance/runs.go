@@ -20,6 +20,9 @@ func (a *application) runs(ctx context.Context, args []string) error {
 		a.help(ctx, usage)
 		return nil
 	}
+	if args[0] == "expire" {
+		return a.expireRuns(ctx, args[1:])
+	}
 	if args[0] == "check" {
 		return a.checkRuns(ctx, args[1:])
 	}
@@ -95,5 +98,36 @@ func (a *application) checkRuns(ctx context.Context, args []string) error {
 	age := time.Since(m.CompletedAt)
 	telemetry.BackupAge(ctx, age.Seconds())
 	a.logger.InfoContext(ctx, "backup freshness check passed", "event", "run.check_passed", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "age_seconds", age.Seconds(), "snapshot_count", len(m.Entries))
+	return nil
+}
+
+func (a *application) expireRuns(ctx context.Context, args []string) error {
+	fs := quietFlags("runs expire")
+	age := fs.Duration("older-than", 0, "minimum age of incomplete runs")
+	apply := fs.Bool("apply", false, "apply expiry instead of logging the plan")
+	takeover := fs.Bool("takeover", false, "take over only after the previous process has terminated")
+	help, err := a.parse(ctx, fs, args, "qdrant-maintenance runs expire --older-than <duration> [--apply] [--takeover]")
+	if err != nil || help {
+		return err
+	}
+	if fs.NArg() != 0 || *age <= 0 {
+		return fmt.Errorf("a positive --older-than is required")
+	}
+	if *takeover && !*apply {
+		return fmt.Errorf("--takeover requires --apply")
+	}
+	store, err := a.storage(ctx)
+	if err != nil {
+		return err
+	}
+	repo := runs.Repository{Store: store}
+	plan, err := runs.PlanExpiry(ctx, repo, *age, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	a.logRunPlan(ctx, plan)
+	if *apply {
+		return plan.Apply(ctx, repo, a.logger, *takeover)
+	}
 	return nil
 }

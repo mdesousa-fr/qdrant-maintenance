@@ -214,8 +214,9 @@ func (a *application) retention(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown retention action: %s", action)
 	}
 	fs := quietFlags("retention " + action)
-	force := false
+	force, takeover := false, false
 	if action == "apply" {
+		fs.BoolVar(&takeover, "takeover", false, "take over pruning only after the previous process has terminated")
 		fs.BoolVar(&force, "force", false, "allow deleting all snapshots when RETENTION_KEEP_LAST=0")
 	}
 	help, err := a.parse(ctx, fs, args[1:], usage)
@@ -239,7 +240,10 @@ func (a *application) retention(ctx context.Context, args []string) error {
 		return err
 	}
 	if cfg.Policy == "run" {
-		return a.runRetention(ctx, store, cfg.KeepLast, action)
+		return a.runRetention(ctx, store, cfg.KeepLast, action, takeover)
+	}
+	if takeover {
+		return fmt.Errorf("--takeover applies only to run retention")
 	}
 	plan, err := retention.BuildPlan(ctx, store, cfg.KeepLast)
 	if err != nil {

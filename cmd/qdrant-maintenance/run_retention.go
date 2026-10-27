@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/runs"
 )
 
@@ -15,14 +14,14 @@ func (a *application) logRunPlan(ctx context.Context, plan runs.RunPlan) {
 		a.logger.InfoContext(ctx, "snapshot selected for removal", "event", "retention.selected", "key", key)
 	}
 }
-func (a *application) runRetention(ctx context.Context, store snapshotStore, keep int, action string) error {
+func (a *application) runRetention(ctx context.Context, store snapshotStore, keep int, action string, takeover bool) error {
 	plan, err := runs.PlanRetention(ctx, runs.Repository{Store: store}, keep)
 	if err != nil {
 		return err
 	}
 	a.logRunPlan(ctx, plan)
 	if action == "apply" {
-		return fmt.Errorf("run retention application is not implemented yet")
+		return plan.Apply(ctx, runs.Repository{Store: store}, a.logger, takeover)
 	}
 	return nil
 }

@@ -20,6 +20,7 @@ type memoryStore struct {
 	deleted     []string
 	writes      int
 	failWriteAt int
+	deleteError error
 }
 
 func newStore() *memoryStore {
@@ -61,6 +62,9 @@ func (s *memoryStore) ListObjects(context.Context) ([]storage.Object, error) {
 func (s *memoryStore) DeleteObject(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.deleteError != nil {
+		return s.deleteError
 	}
 	s.deleted = append(s.deleted, key)
 	delete(s.data, key)
