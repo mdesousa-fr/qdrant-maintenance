@@ -329,3 +329,23 @@ verified S3 copy; absent/unverified copies are never a basis for Qdrant deletion
 Already-cleaned sources are skipped, and Qdrant 404 responses are treated as
 idempotent success. Failures remain recorded and can be retried. The same explicit
 `--takeover` rule applies to interrupted writer reservations.
+
+### Full content verification
+
+```sh
+qdrant-maintenance snapshots verify --run <run_id>
+qdrant-maintenance snapshots verify --collection documents --node qdrant-0
+```
+
+Verification streams bytes through SHA-256 with bounded memory and checks the
+expected size, checksum, and object metadata. Manifest-backed failures and
+verification timestamps are persisted; freshness rejects recorded failures until
+a successful verification clears them. Verification is separate from original
+backup success and does not turn an incomplete run into a complete run.
+
+The collection/node selector also checks unmanaged node-qualified snapshots using
+their S3 SHA-256 metadata. Missing checksum metadata is an error; unmanaged results
+are logged but have no manifest in which to persist health. Verification performs
+no Qdrant requests. It reserves manifests while updating verification records;
+`--takeover` is available only after the previous writer has terminated. It never
+overrides an active pruning/expired state or repairs objects automatically.

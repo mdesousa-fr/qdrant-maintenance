@@ -267,6 +267,9 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		return fmt.Errorf("snapshots action is required")
 	}
 	action := args[0]
+	if action == "verify" {
+		return a.verify(ctx, args[1:])
+	}
 	if action == "--help" || action == "-h" {
 		a.help(ctx, usage)
 		return nil
