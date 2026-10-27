@@ -7,6 +7,7 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
 	"io"
+	"os"
 	"strconv"
 	"testing"
 )
@@ -117,4 +118,17 @@ func TestInvalidManifestFailsClosed(t *testing.T) {
 			t.Fatalf("invalid manifest accepted: %+v", record.Manifest)
 		}
 	}
+}
+
+func (s *memoryStore) Upload(ctx context.Context, key string, file *os.File, size int64, checksum string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	s.data[key] = data
+	s.details[key] = storage.Details{Size: size, SHA256: checksum}
+	return nil
 }

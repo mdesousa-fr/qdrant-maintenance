@@ -63,6 +63,34 @@ func Run(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, coll
 	if !config.ValidSegment(snapshot.Name) || !strings.HasSuffix(snapshot.Name, ".snapshot") || snapshot.Name == ".snapshot" {
 		return result, fmt.Errorf("invalid snapshot name returned by Qdrant")
 	}
+	result, err = Transfer(ctx, logger, q, store, collection, node, snapshot)
+	if err != nil {
+		return result, err
+	}
+	if !keepSource {
+		if err = q.DeleteSnapshot(ctx, collection, snapshot.Name); err != nil {
+			return result, fmt.Errorf("backup stored at %s but source cleanup failed: %w", result.Key, err)
+		}
+		result.SourceDeleted = true
+	}
+	return result, nil
+}
+
+// Transfer downloads and verifies an existing snapshot without deleting it.
+// Callers persist the successful result before performing source cleanup.
+func Transfer(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, collection, node string, snapshot qdrant.Snapshot) (result Result, err error) {
+	ctx, finish := telemetry.Operation(ctx, "backup.transfer")
+	defer func() {
+		if err != nil {
+			result.Error = err.Error()
+		}
+		finish(err)
+	}()
+	result.Collection = collection
+	result.Node = node
+	if !config.ValidSegment(collection) || !config.ValidSegment(node) || !config.ValidSegment(snapshot.Name) || !strings.HasSuffix(snapshot.Name, ".snapshot") || snapshot.Name == ".snapshot" {
+		return result, fmt.Errorf("invalid snapshot identity")
+	}
 	result.Key = collection + "/" + node + "/" + snapshot.Name
 	logger.InfoContext(ctx, "snapshot created", "event", "snapshot.created", "collection", collection, "node", node, "key", result.Key)
 	file, err := os.CreateTemp("", "qdrant-snapshot-*")
@@ -95,11 +123,5 @@ func Run(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, coll
 	result.Stored = true
 	telemetry.Bytes(ctx, result.Size)
 	logger.InfoContext(ctx, "snapshot uploaded and verified", "event", "snapshot.stored", "key", result.Key, "size", result.Size)
-	if !keepSource {
-		if err = q.DeleteSnapshot(ctx, collection, snapshot.Name); err != nil {
-			return result, fmt.Errorf("backup stored at %s but source cleanup failed: %w", result.Key, err)
-		}
-		result.SourceDeleted = true
-	}
 	return result, nil
 }

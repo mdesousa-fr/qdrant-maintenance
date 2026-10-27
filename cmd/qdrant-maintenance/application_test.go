@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,16 +23,27 @@ import (
 )
 
 type memoryStore struct {
+	data               map[string][]byte
+	revisions          map[string]int
+	metadata           map[string]storage.Details
 	objects            []storage.Object
 	deleted, uploaded  []string
 	listErr, deleteErr error
 }
 
 func (s *memoryStore) ListObjects(context.Context) ([]storage.Object, error) {
-	return s.objects, s.listErr
+	objects := append([]storage.Object{}, s.objects...)
+	for key, data := range s.data {
+		objects = append(objects, storage.Object{Key: key, Size: int64(len(data))})
+	}
+	return objects, s.listErr
 }
 func (s *memoryStore) DeleteObject(ctx context.Context, key string) error {
 	s.deleted = append(s.deleted, key)
+	if s.deleteErr == nil {
+		delete(s.data, key)
+		delete(s.metadata, key)
+	}
 	return s.deleteErr
 }
 func (s *memoryStore) Upload(ctx context.Context, key string, f *os.File, size int64, checksum string) error {
@@ -42,6 +54,9 @@ func (s *memoryStore) Upload(ctx context.Context, key string, f *os.File, size i
 	if int64(len(data)) != size {
 		return errors.New("size mismatch")
 	}
+	s.init()
+	s.data[key] = data
+	s.metadata[key] = storage.Details{Size: size, SHA256: checksum}
 	s.uploaded = append(s.uploaded, key)
 	return nil
 }
@@ -312,4 +327,45 @@ func assertLog(t *testing.T, records []map[string]any, message, key string, want
 		}
 	}
 	t.Fatalf("missing log %q in %+v", message, records)
+}
+
+func (s *memoryStore) init() {
+	if s.data == nil {
+		s.data = map[string][]byte{}
+		s.revisions = map[string]int{}
+		s.metadata = map[string]storage.Details{}
+	}
+}
+func (s *memoryStore) GetObject(ctx context.Context, key string) (io.ReadCloser, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	data, ok := s.data[key]
+	if !ok {
+		return nil, "", storage.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(data)), strconv.Itoa(s.revisions[key]), nil
+}
+func (s *memoryStore) PutObject(ctx context.Context, key string, data []byte, etag string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.init()
+	_, exists := s.data[key]
+	if (etag == "" && exists) || (etag != "" && (!exists || etag != strconv.Itoa(s.revisions[key]))) {
+		return "", storage.ErrConflict
+	}
+	s.data[key] = bytes.Clone(data)
+	s.revisions[key]++
+	return strconv.Itoa(s.revisions[key]), nil
+}
+func (s *memoryStore) HeadObject(ctx context.Context, key string) (storage.Details, error) {
+	if err := ctx.Err(); err != nil {
+		return storage.Details{}, err
+	}
+	d, ok := s.metadata[key]
+	if !ok {
+		return d, storage.ErrNotFound
+	}
+	return d, nil
 }

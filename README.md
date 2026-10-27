@@ -255,3 +255,14 @@ names; it does not freeze writes or shard placement during the backup window.
 Manifests use schema version 1 and live at `runs/<run_id>.json`, outside the
 snapshot key layout. Their writes use S3 conditional creation and ETag updates;
 unsupported or inconsistent manifests fail closed instead of driving deletion.
+
+### Durable backup progress
+
+Every new backup creates its manifest before creating any Qdrant snapshots.
+Snapshot identity is saved after creation, and successful upload metadata is
+saved before source deletion. A manifest-write failure stops further side effects.
+A process killed between Qdrant creation and recording its returned name can
+still leave an unrecorded source snapshot; inspect its logs before manual cleanup.
+`runs list` logs manifest state and timestamps without requiring Qdrant access.
+Backup completeness is independent of source-cleanup success. A fully stored run
+can be `complete` while reporting cleanup errors and returning a nonzero status.

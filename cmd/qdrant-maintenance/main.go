@@ -19,6 +19,7 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/config"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/qdrant"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/retention"
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/runs"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/s3"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
@@ -54,9 +55,11 @@ func mainExit() int {
 type snapshotStore interface {
 	storage.Client
 	backup.Storage
+	storage.Repository
 }
 type application struct {
 	logger          *slog.Logger
+	runID           string
 	storage         func(context.Context) (snapshotStore, error)
 	qdrant          func(config.QdrantConfig, config.Node) backup.Qdrant
 	qconfig         func(bool) (config.QdrantConfig, error)
@@ -89,7 +92,8 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 }
 func (a *application) run(ctx context.Context, args []string) (err error) {
 	originalLogger := a.logger
-	a.logger = a.logger.With("run_id", rand.Text())
+	a.runID = rand.Text()
+	a.logger = a.logger.With("execution_id", a.runID)
 	defer func() { a.logger = originalLogger }()
 	command := ""
 	if len(args) > 1 {
@@ -97,7 +101,7 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 	}
 	operation := "command.unknown"
 	switch command {
-	case "collections", "snapshots", "retention", "version", "help", "-h", "--help":
+	case "collections", "snapshots", "runs", "retention", "version", "help", "-h", "--help":
 		operation = "command." + command
 	}
 	ctx, finish := telemetry.Operation(ctx, operation)
@@ -118,7 +122,7 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 		if len(args) > 0 {
 			return fmt.Errorf("too many arguments")
 		}
-		a.help(ctx, "qdrant-maintenance <collections|snapshots|retention|version|help>")
+		a.help(ctx, "qdrant-maintenance <collections|snapshots|runs|retention|version|help>")
 		return nil
 	case "version":
 		fs := quietFlags("version")
@@ -135,6 +139,8 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 		return a.collections(ctx, args)
 	case "snapshots":
 		return a.snapshots(ctx, args)
+	case "runs":
+		return a.runs(ctx, args)
 	case "retention":
 		return a.retention(ctx, args)
 	default:
@@ -306,6 +312,7 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		a.logger.InfoContext(ctx, "snapshots listed", "event", "snapshots.listed", "collection", collection, "snapshot_count", len(snapshots))
 		return nil
 	}
+	a.logger = a.logger.With("run_id", a.runID)
 	cfg, err := a.qconfig(true)
 	if err != nil {
 		return err
@@ -327,47 +334,29 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		return err
 	}
 	start := time.Now()
-	expected, attempted, successful, failed, cleanupFailures := len(inventory.Pairs), 0, 0, 0, 0
-	var uploadedBytes int64
-	var errs []error
-	defer func() {
-		outcome := "success"
-		if len(errs) > 0 {
-			outcome = "error"
-		}
-		a.logger.InfoContext(ctx, "backup run finished", "event", "backup.run_summary", "expected_count", expected, "successful_count", successful, "failed_count", failed, "skipped_count", expected-attempted, "cleanup_failed_count", cleanupFailures, "uploaded_bytes", uploadedBytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", expected == successful && len(errs) == 0)
-	}()
-	for _, pair := range inventory.Pairs {
-		if ctx.Err() != nil {
-			errs = append(errs, ctx.Err())
-			break
-		}
-		attempted++
-
-		result, err := backup.Run(ctx, a.logger, clients[pair.Node], store, pair.Collection, pair.Node, keepSource)
-		if result.Stored {
+	engine := runs.Engine{Repo: runs.Repository{Store: store}, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
+		return topology.Inspect(ctx, endpoints, collection)
+	}}
+	manifest, runErr := engine.Create(ctx, runs.New(a.runID, version, collection, inventory, keepSource))
+	successful, failed, skipped, cleanupFailures := 0, 0, 0, 0
+	var bytes int64
+	for _, entry := range manifest.Entries {
+		if entry.Stored {
 			successful++
-			uploadedBytes += result.Size
-			if err != nil {
+			bytes += entry.Size
+			if entry.Error != "" {
 				cleanupFailures++
 			}
-		} else {
+		} else if entry.Error != "" {
 			failed++
-		}
-		attrs := []any{"node", pair.Node, "collection", pair.Collection, "key", result.Key, "size", result.Size, "sha256", result.SHA256, "stored", result.Stored, "source_deleted", result.SourceDeleted}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("node %s collection %s: %w", pair.Node, pair.Collection, err))
-			a.logger.ErrorContext(ctx, "backup failed", append(attrs, "event", "backup.failed", "error", err)...)
 		} else {
-			a.logger.InfoContext(ctx, "backup completed", append(attrs, "event", "backup.completed")...)
+			skipped++
 		}
 	}
-	after, checkErr := topology.Inspect(ctx, endpoints, collection)
-	if checkErr != nil {
-		errs = append(errs, fmt.Errorf("final topology check: %w", checkErr))
-	} else if after.Signature() != inventory.Signature() {
-		errs = append(errs, fmt.Errorf("cluster topology changed during backup"))
+	outcome := "success"
+	if runErr != nil {
+		outcome = "error"
 	}
-
-	return errors.Join(errs...)
+	a.logger.InfoContext(ctx, "backup run finished", "event", "backup.run_summary", "expected_count", len(manifest.Entries), "successful_count", successful, "failed_count", failed, "skipped_count", skipped, "cleanup_failed_count", cleanupFailures, "uploaded_bytes", bytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", manifest.State == "complete")
+	return runErr
 }
