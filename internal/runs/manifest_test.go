@@ -128,6 +128,9 @@ func (s *memoryStore) Upload(ctx context.Context, key string, file *os.File, siz
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if _, exists := s.data[key]; exists {
+		return storage.ErrConflict
+	}
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return err

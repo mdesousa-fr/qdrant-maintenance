@@ -50,10 +50,10 @@ func PlanRetention(ctx context.Context, repo Repository, keep int) (RunPlan, err
 	for _, group := range groups {
 		sort.Slice(group, func(i, j int) bool {
 			a, b := group[i].Manifest, group[j].Manifest
-			if a.CompletedAt.Equal(b.CompletedAt) {
+			if a.StartedAt.Equal(b.StartedAt) {
 				return a.ID < b.ID
 			}
-			return a.CompletedAt.After(b.CompletedAt)
+			return a.StartedAt.After(b.StartedAt)
 		})
 		for i, record := range group {
 			if i < keep {

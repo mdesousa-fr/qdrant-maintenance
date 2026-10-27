@@ -20,6 +20,9 @@ func (a *application) runs(ctx context.Context, args []string) error {
 		a.help(ctx, usage)
 		return nil
 	}
+	if args[0] == "retry" {
+		return a.recoverRun(ctx, args[1:], false)
+	}
 	if args[0] == "expire" {
 		return a.expireRuns(ctx, args[1:])
 	}
@@ -95,7 +98,7 @@ func (a *application) checkRuns(ctx context.Context, args []string) error {
 		a.logger.ErrorContext(ctx, "backup freshness check failed", "event", "run.check_failed", "backup_run_id", m.ID, "error", err)
 		return err
 	}
-	age := time.Since(m.CompletedAt)
+	age := time.Since(m.StartedAt)
 	telemetry.BackupAge(ctx, age.Seconds())
 	a.logger.InfoContext(ctx, "backup freshness check passed", "event", "run.check_passed", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "age_seconds", age.Seconds(), "snapshot_count", len(m.Entries))
 	return nil
@@ -130,4 +133,40 @@ func (a *application) expireRuns(ctx context.Context, args []string) error {
 		return plan.Apply(ctx, repo, a.logger, *takeover)
 	}
 	return nil
+}
+
+func (a *application) recoverRun(ctx context.Context, args []string, cleanup bool) error {
+	action := "retry"
+	if cleanup {
+		action = "cleanup"
+	}
+	fs := quietFlags("runs " + action)
+	takeover := fs.Bool("takeover", false, "take over only after the previous process has terminated")
+	help, err := a.parse(ctx, fs, args, "qdrant-maintenance runs "+action+" [--takeover] <run_id>")
+	if err != nil || help {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("one run ID is required")
+	}
+	id := fs.Arg(0)
+	store, err := a.storage(ctx)
+	if err != nil {
+		return err
+	}
+	repo := runs.Repository{Store: store}
+	record, err := repo.Load(ctx, id)
+	if err != nil {
+		return err
+	}
+	a.logger = a.logger.With("run_id", id)
+	_, clients, endpoints, err := a.inspect(ctx, record.Manifest.Scope)
+	if err != nil {
+		return err
+	}
+	engine := runs.Engine{Repo: repo, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
+		return topology.Inspect(ctx, endpoints, record.Manifest.Scope)
+	}}
+	_, err = engine.Retry(ctx, id, *takeover)
+	return err
 }

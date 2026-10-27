@@ -306,3 +306,19 @@ uploads, and Qdrant sources are not deleted by expiry. Expired/pruned manifests
 remain as audit records. An interrupted process may leave a writer reservation;
 use `--takeover` on apply/expiry only after ensuring the previous process has
 terminated. ETag checks still reject concurrent state changes.
+
+### Retrying recorded transfers
+
+`runs retry <run_id>` verifies current peer/collection coverage and resumes the
+recorded run. Known Qdrant snapshot names are reused; a missing named source is an
+error and is never silently replaced. Entries that failed before obtaining a
+snapshot name can create their first recorded snapshot. Already-verified S3 objects
+are reused. If an upload succeeded before its checkpoint failed, retry computes
+the source hash and can accept the matching existing object without overwriting it.
+Conflicting destination content is never overwritten. A recorded content integrity
+failure must be resolved by full content verification before retry can trust it.
+
+Reservations detect competing recovery processes. After confirming an interrupted
+writer has terminated, `runs retry --takeover <run_id>` can acquire its reservation
+with an ETag check. A run's original start time is preserved. Freshness and run
+retention use run start time so retrying old data cannot make it appear new.

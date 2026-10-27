@@ -86,3 +86,60 @@ func TestTopologyChangeLeavesIncompleteRun(t *testing.T) {
 		t.Fatal(record)
 	}
 }
+
+func TestRetryReusesSnapshotAfterUploadCheckpointFailure(t *testing.T) {
+	ctx := context.Background()
+	store := newStore()
+	store.failWriteAt = 3
+	engine, created, deleted := testEngine(t, store)
+	_, err := engine.Create(ctx, New("run", "test", "", inventory(), false))
+	if err == nil {
+		t.Fatal("expected checkpoint failure")
+	}
+	store.failWriteAt = 0
+	if _, err := engine.Retry(ctx, "run", false); err == nil {
+		t.Fatal("abandoned writer was silently taken over")
+	}
+	m, err := engine.Retry(ctx, "run", true)
+	if err != nil || m.State != "complete" || *created != 1 || *deleted != 1 {
+		t.Fatalf("manifest=%+v created=%d deleted=%d err=%v", m, *created, *deleted, err)
+	}
+}
+func TestRetryDoesNotReuploadStoredSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store := newStore()
+	engine, created, deleted := testEngine(t, store)
+	m, err := engine.Create(ctx, New("run", "test", "", inventory(), true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := m.CompletedAt
+	m, err = engine.Retry(ctx, "run", false)
+	if err != nil || *created != 1 || *deleted != 0 || m.CompletedAt != original {
+		t.Fatalf("manifest=%+v error=%v", m, err)
+	}
+}
+
+func TestRetryMissingNamedSourceIsNotReplaced(t *testing.T) {
+	ctx := context.Background()
+	store := newStore()
+	engine, created, _ := testEngine(t, store)
+	m, err := engine.Create(ctx, New("run", "test", "", inventory(), true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := m.Entries[0].Key
+	delete(store.data, key)
+	delete(store.details, key)
+	missing := testhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			t.Fatal("created replacement source")
+		}
+		w.WriteHeader(404)
+	}))
+	engine.Clients["node-0"].(*qdrant.Client).HTTPClient = missing.Client()
+	m, err = engine.Retry(ctx, "run", false)
+	if err == nil || m.State != "incomplete" || *created != 1 {
+		t.Fatalf("manifest=%+v error=%v", m, err)
+	}
+}

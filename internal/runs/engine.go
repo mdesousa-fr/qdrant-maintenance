@@ -22,6 +22,7 @@ type Engine struct {
 	Store   BackupStore
 	Clients map[string]backup.Qdrant
 	Logger  *slog.Logger
+	Recover bool
 	Inspect func(context.Context) (topology.Inventory, error)
 }
 
@@ -63,7 +64,7 @@ func (e Engine) execute(ctx context.Context, record *Record) (Manifest, error) {
 	}
 	complete := checkErr == nil && after.Signature() == record.Manifest.Inventory.Signature()
 	for _, entry := range record.Manifest.Entries {
-		complete = complete && entry.Stored && !entry.Deleted
+		complete = complete && entry.Stored && !entry.Deleted && entry.VerifyError == ""
 	}
 	record.Manifest.State = "incomplete"
 	if complete {
@@ -105,21 +106,44 @@ func (e Engine) transfer(ctx context.Context, record *Record, index int) (operat
 			return nil, err
 		}
 	}
+
+	if entry.Stored {
+		if err := CheckObject(ctx, e.Store, *entry); err != nil {
+			if entry.VerifyError != "" {
+				return fail(fmt.Errorf("recorded verification failure must be resolved with snapshots verify before recovery: %w", err))
+			}
+			if !errors.Is(err, storage.ErrNotFound) || entry.SourceDeleted {
+				entry.VerifyError = err.Error()
+				return fail(err)
+			}
+			entry.Stored = false
+			if err := e.save(ctx, record); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if !entry.Stored {
-		result, err := backup.Transfer(ctx, e.Logger, client, e.Store, entry.Collection, entry.Node, *entry.Snapshot)
+		var target backup.Storage = e.Store
+		if e.Recover {
+			target = recoveryUpload{e.Store}
+		}
+		result, err := backup.Transfer(ctx, e.Logger, client, target, entry.Collection, entry.Node, *entry.Snapshot)
 		if err != nil {
+			var status *qdrant.HTTPError
+			if errors.As(err, &status) && status.StatusCode == 404 {
+				err = fmt.Errorf("source snapshot %s is missing; refusing to replace it: %w", entry.Snapshot.Name, err)
+			}
 			return fail(err)
 		}
 		entry.Size = result.Size
 		entry.SHA256 = result.SHA256
 		entry.Stored = true
-		// This conditional write must succeed before any Qdrant DELETE request.
+		entry.VerifyError = ""
 		if err := e.save(ctx, record); err != nil {
 			return nil, err
 		}
-	} else if err := CheckObject(ctx, e.Store, *entry); err != nil {
-		return fail(err)
 	}
+
 	if !record.Manifest.KeepSource && !entry.SourceDeleted {
 		err := client.DeleteSnapshot(ctx, entry.Collection, entry.Snapshot.Name)
 		var status *qdrant.HTTPError

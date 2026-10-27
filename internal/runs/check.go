@@ -42,17 +42,17 @@ func Check(ctx context.Context, repo Repository, expected topology.Inventory, sc
 	}
 	sort.Slice(records, func(i, j int) bool {
 		a, b := records[i].Manifest, records[j].Manifest
-		if a.CompletedAt.Equal(b.CompletedAt) {
+		if a.StartedAt.Equal(b.StartedAt) {
 			return a.ID < b.ID
 		}
-		return a.CompletedAt.After(b.CompletedAt)
+		return a.StartedAt.After(b.StartedAt)
 	})
 	for _, record := range records {
 		m := record.Manifest
 		if m.State != "complete" || !Covers(m, expected, scope) {
 			continue
 		}
-		age := now.Sub(m.CompletedAt)
+		age := now.Sub(m.StartedAt)
 		if age < 0 {
 			return m, fmt.Errorf("latest complete backup timestamp is in the future")
 		}
