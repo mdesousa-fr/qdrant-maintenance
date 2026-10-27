@@ -9,6 +9,7 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/qdrant"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
 )
 
 func recoverable(m Manifest) error {
@@ -39,7 +40,9 @@ func (e Engine) loadRecovery(ctx context.Context, id string, takeover bool) (Rec
 	}
 	return record, nil
 }
-func (e Engine) Retry(ctx context.Context, id string, takeover bool) (Manifest, error) {
+func (e Engine) Retry(ctx context.Context, id string, takeover bool) (result Manifest, err error) {
+	ctx, finish := telemetry.Operation(ctx, "backup.retry")
+	defer func() { finish(err) }()
 	record, err := e.loadRecovery(ctx, id, takeover)
 	if err != nil {
 		return record.Manifest, err
@@ -76,6 +79,8 @@ var _ backup.Storage = recoveryUpload{}
 // Cleanup removes only recorded Qdrant sources with healthy committed S3 copies.
 // Explicit cleanup overrides the original keep-source preference.
 func (e Engine) Cleanup(ctx context.Context, id string, takeover bool) (manifest Manifest, err error) {
+	ctx, finish := telemetry.Operation(ctx, "backup.cleanup")
+	defer func() { finish(err) }()
 	record, err := e.loadRecovery(ctx, id, takeover)
 	if err != nil {
 		return record.Manifest, err

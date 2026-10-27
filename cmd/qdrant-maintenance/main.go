@@ -24,6 +24,8 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var version = "1.0.0"
@@ -106,6 +108,7 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 		operation = "command." + command
 	}
 	ctx, finish := telemetry.Operation(ctx, operation)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("execution_id", a.runID))
 	defer func() {
 		if err != nil {
 			a.logger.ErrorContext(ctx, "command failed", "event", "command.failed", "command", command, "error", err)
@@ -324,6 +327,7 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		return nil
 	}
 	a.logger = a.logger.With("run_id", a.runID)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("run_id", a.runID))
 	cfg, err := a.qconfig(true)
 	if err != nil {
 		return err
@@ -349,16 +353,21 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		return topology.Inspect(ctx, endpoints, collection)
 	}}
 	manifest, runErr := engine.Create(ctx, runs.New(a.runID, version, collection, inventory, keepSource))
+	a.logRunSummary(ctx, manifest, start, runErr, "backup.run_summary")
+	return runErr
+}
+
+func (a *application) logRunSummary(ctx context.Context, manifest runs.Manifest, start time.Time, runErr error, event string) {
 	successful, failed, skipped, cleanupFailures := 0, 0, 0, 0
 	var bytes int64
 	for _, entry := range manifest.Entries {
-		if entry.Stored {
+		if entry.Stored && entry.VerifyError == "" {
 			successful++
 			bytes += entry.Size
 			if entry.Error != "" {
 				cleanupFailures++
 			}
-		} else if entry.Error != "" {
+		} else if entry.Error != "" || entry.VerifyError != "" {
 			failed++
 		} else {
 			skipped++
@@ -368,6 +377,9 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 	if runErr != nil {
 		outcome = "error"
 	}
-	a.logger.InfoContext(ctx, "backup run finished", "event", "backup.run_summary", "expected_count", len(manifest.Entries), "successful_count", successful, "failed_count", failed, "skipped_count", skipped, "cleanup_failed_count", cleanupFailures, "uploaded_bytes", bytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", manifest.State == "complete")
-	return runErr
+	attrs := []any{"event", event, "expected_count", len(manifest.Entries), "successful_count", successful, "failed_count", failed, "skipped_count", skipped, "cleanup_failed_count", cleanupFailures, "stored_bytes", bytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", manifest.State == "complete"}
+	if event == "backup.run_summary" {
+		attrs = append(attrs, "uploaded_bytes", bytes)
+	}
+	a.logger.InfoContext(ctx, "backup run finished", attrs...)
 }

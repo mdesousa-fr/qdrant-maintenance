@@ -76,3 +76,14 @@ func TestFreshnessRejectsNoCompleteCoverage(t *testing.T) {
 		t.Fatal("incomplete run accepted")
 	}
 }
+
+func TestFreshnessDoesNotHideLatestDamageWithOlderHealthyRun(t *testing.T) {
+	store := newStore()
+	now := time.Now()
+	completeRecord(t, store, "older", now.Add(-20*time.Minute))
+	latest := completeRecord(t, store, "latest", now.Add(-time.Minute))
+	delete(store.details, latest.Manifest.Entries[0].Key)
+	if _, err := Check(context.Background(), Repository{Store: store}, inventory(), "", time.Hour, now); err == nil {
+		t.Fatal("fell back to older healthy run")
+	}
+}

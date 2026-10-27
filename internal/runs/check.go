@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
 )
 
@@ -32,7 +33,9 @@ func Covers(m Manifest, expected topology.Inventory, scope string) bool {
 	}
 	return true
 }
-func Check(ctx context.Context, repo Repository, expected topology.Inventory, scope string, maxAge time.Duration, now time.Time) (Manifest, error) {
+func Check(ctx context.Context, repo Repository, expected topology.Inventory, scope string, maxAge time.Duration, now time.Time) (result Manifest, err error) {
+	ctx, finish := telemetry.Operation(ctx, "runs.check")
+	defer func() { finish(err) }()
 	if maxAge <= 0 {
 		return Manifest{}, fmt.Errorf("max-age must be positive")
 	}

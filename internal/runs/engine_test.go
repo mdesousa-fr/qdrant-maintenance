@@ -174,3 +174,37 @@ func TestCleanupRequiresHealthyStoredCopyAndIsIdempotent(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletionRequiresDurableFinalManifest(t *testing.T) {
+	store := newStore()
+	store.failWriteAt = 5
+	engine, _, _ := testEngine(t, store)
+	m, err := engine.Create(context.Background(), New("run", "test", "", inventory(), false))
+	if err == nil || m.State == "complete" {
+		t.Fatalf("uncommitted completion reported: %+v %v", m, err)
+	}
+	stored, err := engine.Repo.Load(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Manifest.State == "complete" {
+		t.Fatal("completion unexpectedly persisted")
+	}
+}
+
+func TestRetryAfterAmbiguousCommittedCheckpoint(t *testing.T) {
+	store := newStore()
+	store.failWriteAfterAt = 3
+	engine, created, deleted := testEngine(t, store)
+	if _, err := engine.Create(context.Background(), New("run", "test", "", inventory(), false)); err == nil {
+		t.Fatal("expected lost response")
+	}
+	if *deleted != 0 {
+		t.Fatal("deleted source without receiving a successful checkpoint response")
+	}
+	store.failWriteAfterAt = 0
+	m, err := engine.Retry(context.Background(), "run", true)
+	if err != nil || m.State != "complete" || *created != 1 || *deleted != 1 {
+		t.Fatalf("manifest=%+v error=%v", m, err)
+	}
+}

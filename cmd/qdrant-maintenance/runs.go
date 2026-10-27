@@ -8,6 +8,8 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/runs"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"time"
 )
 
@@ -53,7 +55,7 @@ func (a *application) runs(ctx context.Context, args []string) error {
 	}
 	for _, record := range records {
 		m := record.Manifest
-		a.logger.InfoContext(ctx, "backup run found", "event", "run.found", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "state", m.State, "started_at", m.StartedAt, "completed_at", m.CompletedAt, "snapshot_count", len(m.Entries), "error", m.Error)
+		a.logger.InfoContext(ctx, "backup run found", "event", "run.found", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "state", m.State, "started_at", m.StartedAt, "completed_at", m.CompletedAt, "expected_count", len(m.Entries), "error", m.Error)
 	}
 	a.logger.InfoContext(ctx, "backup runs listed", "event", "runs.listed", "run_count", len(records))
 	return nil
@@ -103,7 +105,7 @@ func (a *application) checkRuns(ctx context.Context, args []string) error {
 	}
 	age := time.Since(m.StartedAt)
 	telemetry.BackupAge(ctx, age.Seconds())
-	a.logger.InfoContext(ctx, "backup freshness check passed", "event", "run.check_passed", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "age_seconds", age.Seconds(), "snapshot_count", len(m.Entries))
+	a.logger.InfoContext(ctx, "backup freshness check passed", "event", "run.check_passed", "backup_run_id", m.ID, "cluster_id", m.Inventory.ClusterID, "age_seconds", age.Seconds(), "snapshot_count", len(inventory.Pairs))
 	return nil
 }
 
@@ -163,6 +165,7 @@ func (a *application) recoverRun(ctx context.Context, args []string, cleanup boo
 		return err
 	}
 	a.logger = a.logger.With("run_id", id)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("run_id", id))
 	_, clients, endpoints, err := a.inspect(ctx, record.Manifest.Scope)
 	if err != nil {
 		return err
@@ -170,10 +173,16 @@ func (a *application) recoverRun(ctx context.Context, args []string, cleanup boo
 	engine := runs.Engine{Repo: repo, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
 		return topology.Inspect(ctx, endpoints, record.Manifest.Scope)
 	}}
+	start := time.Now()
+	var result runs.Manifest
+	event := "backup.retry_summary"
 	if cleanup {
-		_, err = engine.Cleanup(ctx, id, *takeover)
+		result, err = engine.Cleanup(ctx, id, *takeover)
+		event = "backup.cleanup_summary"
 	} else {
-		_, err = engine.Retry(ctx, id, *takeover)
+		result, err = engine.Retry(ctx, id, *takeover)
 	}
+	a.logRunSummary(ctx, result, start, err, event)
+
 	return err
 }

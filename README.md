@@ -203,7 +203,8 @@ Metrics include:
 
 - `qdrant_maintenance.operations`: count by operation and outcome.
 - `qdrant_maintenance.operation.duration`: seconds by operation and outcome.
-- `qdrant_maintenance.backup.bytes`: bytes uploaded and verified.
+- `qdrant_maintenance.backup.bytes`: bytes processed through successful transfer
+  verification, including matching destinations accepted during recovery.
 - `qdrant_maintenance.retention.deleted`: successful retention deletions.
 
 Collection names, node IDs, and object keys are excluded from custom metric
@@ -246,7 +247,8 @@ restorable Qdrant backups. They are not used by the unit test suite.
 Command events include a stable `event` identifier and an `execution_id`. Backup
 creation and recovery events also carry the persistent `run_id`. Backup runs
 emit `backup.run_summary` with expected, successful, failed, skipped, and source
-cleanup failure counts, uploaded bytes, duration, outcome, and completeness.
+cleanup failure counts, stored bytes, duration, outcome, and completeness. Retry
+and cleanup commands emit the corresponding summary events as well.
 Identifiers are log attributes, never custom metric labels.
 
 Cluster validation fails before writes for missing peers, duplicate endpoints,
@@ -367,3 +369,19 @@ without publishing anything. Docker builds accept `VERSION` and `GIT_COMMIT`
 build arguments. Creating/pushing a version tag triggers publication; ordinary
 main-branch commits do not. No release tag or registry publication is created as
 part of implementing these workflows.
+
+### Storage permissions and concurrency
+
+The backend must support S3 ETags and conditional `If-Match` / `If-None-Match`
+writes. Grant `s3:ListBucket` on the bucket, `s3:GetObject` and `s3:PutObject` on
+both snapshot objects and `runs/*`, and `s3:AbortMultipartUpload` on snapshot
+objects. Pruning additionally requires `s3:DeleteObject` on snapshot objects;
+manifest objects are retained. A role for `runs list` or `runs check` only needs
+the corresponding read/list permissions. Verification writes manifest health and
+therefore requires write access to `runs/*`.
+
+Reservations coordinate commands acting on the same manifest. They are not a
+bucket-wide lock: schedule creation and retention windows to avoid overlap, and
+do not run different retention policies concurrently. Conditional writes detect
+conflicts rather than silently overwriting another writer's state. No reservation
+is automatically stolen based on elapsed time.

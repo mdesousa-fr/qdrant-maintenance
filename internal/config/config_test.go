@@ -154,3 +154,29 @@ func TestInvalidSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestRetentionPolicyValidation(t *testing.T) {
+	t.Setenv("RETENTION_KEEP_LAST", "5")
+	for _, policy := range []string{"", "snapshot", "run", "invalid"} {
+		t.Run(policy, func(t *testing.T) {
+			t.Setenv("RETENTION_POLICY", policy)
+			c, err := LoadRetention()
+			if policy == "invalid" {
+				if err == nil {
+					t.Fatal("invalid policy accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := policy
+			if want == "" {
+				want = "snapshot"
+			}
+			if c.Policy != want {
+				t.Fatal(c)
+			}
+		})
+	}
+}

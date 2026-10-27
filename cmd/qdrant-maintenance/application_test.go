@@ -369,3 +369,86 @@ func (s *memoryStore) HeadObject(ctx context.Context, key string) (storage.Detai
 	}
 	return d, nil
 }
+
+func TestManifestWorkflowThroughCLIWithMockedAPIs(t *testing.T) {
+	store := &memoryStore{}
+	app, logs := testApp(t, store)
+	app.qconfig = func(bool) (config.QdrantConfig, error) {
+		return config.QdrantConfig{Nodes: []config.Node{{ID: "node-0", URL: "http://node-0"}}}, nil
+	}
+	app.qdrant = func(config.QdrantConfig, config.Node) backup.Qdrant {
+		server := testhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/cluster":
+				fmt.Fprint(w, `{"result":{"status":"enabled","peer_id":1,"peers":{"1":{}}}}`)
+			case r.URL.Path == "/collections":
+				fmt.Fprint(w, `{"result":{"collections":[{"name":"docs"}]}}`)
+			case r.Method == http.MethodPost:
+				fmt.Fprint(w, `{"result":{"name":"workflow.snapshot","creation_time":"2026-10-27T10:00:00","size":7}}`)
+			case r.Method == http.MethodGet:
+				fmt.Fprint(w, "archive")
+			case r.Method == http.MethodDelete:
+				fmt.Fprint(w, `{"result":true}`)
+			default:
+				t.Fatal(r.Method, r.URL)
+			}
+		}))
+		client := qdrant.NewClient(server.URL, "")
+		client.HTTPClient = server.Client()
+		return client
+	}
+	ctx := context.Background()
+	if err := app.run(ctx, []string{"cli", "snapshots", "create", "--all", "--keep-source"}); err != nil {
+		t.Fatal(err)
+	}
+	id := app.runID
+	for _, args := range [][]string{
+		{"cli", "runs", "list"},
+		{"cli", "runs", "check", "--max-age", "24h"},
+		{"cli", "snapshots", "verify", "--run", id},
+		{"cli", "snapshots", "verify", "--collection", "docs", "--node", "node-0"},
+		{"cli", "runs", "cleanup", id},
+	} {
+		if err := app.run(ctx, args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	app.retentionConfig = func() (config.RetentionConfig, error) { return config.RetentionConfig{KeepLast: 0, Policy: "run"}, nil }
+	if err := app.run(ctx, []string{"cli", "retention", "apply", "--force"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.run(ctx, []string{"cli", "runs", "check", "--max-age", "24h"}); err == nil {
+		t.Fatal("pruned backup passed freshness")
+	}
+	records := readLogs(t, logs)
+	assertLog(t, records, "snapshot content verified", "event", "snapshot.verified")
+	assertLog(t, records, "snapshot pruned", "event", "retention.deleted")
+}
+func TestPreflightRejectsMissingPeerBeforeWrites(t *testing.T) {
+	store := &memoryStore{}
+	app, _ := testApp(t, store)
+	app.qconfig = func(bool) (config.QdrantConfig, error) {
+		return config.QdrantConfig{Nodes: []config.Node{{ID: "node-0", URL: "http://node-0"}}}, nil
+	}
+	app.qdrant = func(config.QdrantConfig, config.Node) backup.Qdrant {
+		server := testhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Fatal("write before cluster coverage validation")
+			}
+			if r.URL.Path == "/cluster" {
+				fmt.Fprint(w, `{"result":{"status":"enabled","peer_id":1,"peers":{"1":{},"2":{}}}}`)
+			} else {
+				fmt.Fprint(w, `{"result":{"collections":[{"name":"docs"}]}}`)
+			}
+		}))
+		client := qdrant.NewClient(server.URL, "")
+		client.HTTPClient = server.Client()
+		return client
+	}
+	if err := app.run(context.Background(), []string{"cli", "snapshots", "create", "--all"}); err == nil {
+		t.Fatal("missing peer accepted")
+	}
+	if len(store.data) != 0 || len(store.uploaded) != 0 {
+		t.Fatal("storage mutated before validation")
+	}
+}

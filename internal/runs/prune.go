@@ -39,6 +39,8 @@ func revisionsMatch(ctx context.Context, repo Repository, expected map[string]st
 // Apply reserves every candidate before deleting anything, rechecks the inventory,
 // and persists deletion checkpoints. A failed apply can be planned and resumed.
 func (p RunPlan) Apply(ctx context.Context, repo Repository, logger *slog.Logger, takeover bool) (err error) {
+	ctx, finish := telemetry.Operation(ctx, "retention.run_apply")
+	defer func() { finish(err) }()
 	if err := revisionsMatch(ctx, repo, p.Revisions); err != nil {
 		return fmt.Errorf("run inventory changed: %w", err)
 	}

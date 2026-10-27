@@ -14,13 +14,14 @@ import (
 
 // Memory storage mocks S3 conditional writes and records mutation ordering.
 type memoryStore struct {
-	data        map[string][]byte
-	revisions   map[string]int
-	details     map[string]storage.Details
-	deleted     []string
-	writes      int
-	failWriteAt int
-	deleteError error
+	data             map[string][]byte
+	revisions        map[string]int
+	details          map[string]storage.Details
+	deleted          []string
+	writes           int
+	failWriteAt      int
+	failWriteAfterAt int
+	deleteError      error
 }
 
 func newStore() *memoryStore {
@@ -50,6 +51,9 @@ func (s *memoryStore) PutObject(ctx context.Context, key string, data []byte, et
 	}
 	s.data[key] = bytes.Clone(data)
 	s.revisions[key]++
+	if s.writes == s.failWriteAfterAt {
+		return "", fmt.Errorf("response lost after committed write")
+	}
 	return strconv.Itoa(s.revisions[key]), nil
 }
 func (s *memoryStore) ListObjects(context.Context) ([]storage.Object, error) {

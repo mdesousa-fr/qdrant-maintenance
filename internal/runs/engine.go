@@ -10,6 +10,7 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/qdrant"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
 )
 
@@ -26,7 +27,9 @@ type Engine struct {
 	Inspect func(context.Context) (topology.Inventory, error)
 }
 
-func (e Engine) Create(ctx context.Context, m Manifest) (Manifest, error) {
+func (e Engine) Create(ctx context.Context, m Manifest) (result Manifest, err error) {
+	ctx, finish := telemetry.Operation(ctx, "backup.run")
+	defer func() { finish(err) }()
 	record := Record{Manifest: m}
 	if err := e.Repo.Save(ctx, &record); err != nil {
 		return m, err
@@ -84,6 +87,8 @@ func (e Engine) execute(ctx context.Context, record *Record) (Manifest, error) {
 	defer cancel()
 	if err := e.Repo.Save(saveCtx, record); err != nil {
 		errs = append(errs, err)
+		record.Manifest.State = "incomplete"
+		record.Manifest.Error = errors.Join(errs...).Error()
 	}
 	return record.Manifest, errors.Join(errs...)
 }
