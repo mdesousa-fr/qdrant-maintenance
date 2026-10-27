@@ -1,0 +1,52 @@
+# Separate pruning job. Alternatively, invoke retention only after a successful
+# backup through your orchestrator. This job needs no Qdrant credentials.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qdrant-snapshot-retention
+spec:
+  schedule: "30 5 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          serviceAccountName: qdrant-maintenance
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          containers:
+            - name: retention
+              image: your-registry/qdrant-maintenance:1.0.0
+              args: ["retention", "apply"]
+              env:
+                - name: S3_BUCKET
+                  value: your-cluster-snapshots
+                - name: AWS_REGION
+                  value: eu-west-1
+                - name: RETENTION_KEEP_LAST
+                  value: "5"
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: http://otel-collector:4318
+                - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                  value: http/protobuf
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: "1"
+                  memory: 256Mi

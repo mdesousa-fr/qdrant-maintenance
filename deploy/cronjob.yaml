@@ -1,0 +1,74 @@
+# Replace endpoints, bucket, image, and workload identity with your deployment.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qdrant-backup
+spec:
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 21600
+      template:
+        spec:
+          serviceAccountName: qdrant-maintenance
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+          containers:
+            - name: backup
+              image: your-registry/qdrant-maintenance:1.0.0
+              args: ["snapshots", "create", "--all"]
+              env:
+                - name: QDRANT_NODES
+                  value: '{"qdrant-0":"http://qdrant-0.qdrant-headless:6333","qdrant-1":"http://qdrant-1.qdrant-headless:6333","qdrant-2":"http://qdrant-2.qdrant-headless:6333"}'
+                - name: QDRANT_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: qdrant-maintenance
+                      key: qdrant-api-key
+                - name: S3_BUCKET
+                  value: your-cluster-snapshots
+                - name: AWS_REGION
+                  value: eu-west-1
+                - name: QDRANT_TIMEOUT
+                  value: 30m
+                - name: S3_TIMEOUT
+                  value: 30m
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: http://otel-collector:4318
+                - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                  value: http/protobuf
+                - name: OTEL_SERVICE_NAME
+                  value: qdrant-maintenance
+                - name: OTEL_RESOURCE_ATTRIBUTES
+                  value: deployment.environment.name=production
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                  ephemeral-storage: 10Gi
+                limits:
+                  cpu: "1"
+                  memory: 256Mi
+                  ephemeral-storage: 100Gi
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /tmp
+          volumes:
+            - name: snapshots
+              emptyDir:
+                sizeLimit: 100Gi
