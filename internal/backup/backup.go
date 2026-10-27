@@ -63,7 +63,7 @@ func Run(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, coll
 		return result, fmt.Errorf("invalid snapshot name returned by Qdrant")
 	}
 	result.Key = collection + "/" + node + "/" + snapshot.Name
-	logger.InfoContext(ctx, "snapshot created", "collection", collection, "node", node, "key", result.Key)
+	logger.InfoContext(ctx, "snapshot created", "event", "snapshot.created", "collection", collection, "node", node, "key", result.Key)
 	file, err := os.CreateTemp("", "qdrant-snapshot-*")
 	if err != nil {
 		return result, fmt.Errorf("create temporary file: %w", err)
@@ -93,7 +93,7 @@ func Run(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, coll
 	}
 	result.Stored = true
 	telemetry.Bytes(ctx, result.Size)
-	logger.InfoContext(ctx, "snapshot uploaded and verified", "key", result.Key, "size", result.Size)
+	logger.InfoContext(ctx, "snapshot uploaded and verified", "event", "snapshot.stored", "key", result.Key, "size", result.Size)
 	if !keepSource {
 		if err = q.DeleteSnapshot(ctx, collection, snapshot.Name); err != nil {
 			return result, fmt.Errorf("backup stored at %s but source cleanup failed: %w", result.Key, err)

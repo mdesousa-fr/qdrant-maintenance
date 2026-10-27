@@ -238,3 +238,10 @@ The CLI pushes telemetry and does not expose a long-lived HTTP metrics server.
 The existing `docker-compose.yaml` and `scripts/init-snapshots.sh` are optional
 manual development fixtures. Their seeded S3 objects are placeholder files, not
 restorable Qdrant backups. They are not used by the unit test suite.
+
+## Operational event schema
+
+Command events include a stable `event` identifier and a `run_id`. Backup runs
+emit `backup.run_summary` with expected, successful, failed, skipped, and source
+cleanup failure counts, uploaded bytes, duration, outcome, and completeness.
+Identifiers are log attributes, never custom metric labels.

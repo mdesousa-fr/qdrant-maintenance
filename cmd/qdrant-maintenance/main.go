@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,12 +35,12 @@ func mainExit() int {
 	if err == nil {
 		err = run(ctx, logger, os.Args)
 	} else {
-		logger.Error("initialize telemetry", "error", err)
+		logger.Error("initialize telemetry", "event", "telemetry.initialization_failed", "error", err)
 	}
 	flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if flushErr := shutdown(flushCtx); flushErr != nil {
-		logger.Error("flush telemetry", "error", flushErr)
+		logger.Error("flush telemetry", "event", "telemetry.shutdown_failed", "error", flushErr)
 		err = errors.Join(err, flushErr)
 	}
 	if err != nil {
@@ -62,29 +63,33 @@ type application struct {
 }
 
 func newApplication(logger *slog.Logger) *application {
-	return &application{logger: logger, qconfig: config.LoadQdrant, retentionConfig: config.LoadRetention,
-		storage: func(ctx context.Context) (snapshotStore, error) {
-			cfg, err := config.LoadStorage()
-			if err != nil {
-				return nil, err
-			}
-			client, err := s3.NewClient(ctx, logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint)
-			if err != nil {
-				return nil, err
-			}
-			client.Timeout = cfg.Timeout
-			return client, nil
-		},
+	app := &application{logger: logger, qconfig: config.LoadQdrant, retentionConfig: config.LoadRetention,
 		qdrant: func(cfg config.QdrantConfig, node config.Node) backup.Qdrant {
 			client := qdrant.NewClient(node.URL, cfg.APIKey)
 			client.HTTPClient.(*http.Client).Timeout = cfg.Timeout
 			return client
 		}}
+	app.storage = func(ctx context.Context) (snapshotStore, error) {
+		cfg, err := config.LoadStorage()
+		if err != nil {
+			return nil, err
+		}
+		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+		client.Timeout = cfg.Timeout
+		return client, nil
+	}
+	return app
 }
 func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	return newApplication(logger).run(ctx, args)
 }
 func (a *application) run(ctx context.Context, args []string) (err error) {
+	originalLogger := a.logger
+	a.logger = a.logger.With("run_id", rand.Text())
+	defer func() { a.logger = originalLogger }()
 	command := ""
 	if len(args) > 1 {
 		command = args[1]
@@ -97,9 +102,9 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 	ctx, finish := telemetry.Operation(ctx, operation)
 	defer func() {
 		if err != nil {
-			a.logger.ErrorContext(ctx, "command failed", "command", command, "error", err)
+			a.logger.ErrorContext(ctx, "command failed", "event", "command.failed", "command", command, "error", err)
 		} else {
-			a.logger.InfoContext(ctx, "command completed", "command", command)
+			a.logger.InfoContext(ctx, "command completed", "event", "command.completed", "command", command)
 		}
 		finish(err)
 	}()
@@ -123,7 +128,7 @@ func (a *application) run(ctx context.Context, args []string) (err error) {
 		if fs.NArg() > 0 {
 			return fmt.Errorf("too many arguments")
 		}
-		a.logger.InfoContext(ctx, "application version", "version", version)
+		a.logger.InfoContext(ctx, "application version", "event", "application.version", "version", version)
 		return nil
 	case "collections":
 		return a.collections(ctx, args)
@@ -142,7 +147,7 @@ func quietFlags(name string) *flag.FlagSet {
 	return fs
 }
 func (a *application) help(ctx context.Context, usage string) {
-	a.logger.InfoContext(ctx, "command help", "usage", usage)
+	a.logger.InfoContext(ctx, "command help", "event", "command.help", "usage", usage)
 }
 func (a *application) parse(ctx context.Context, fs *flag.FlagSet, args []string, usage string) (bool, error) {
 	if err := fs.Parse(args); err != nil {
@@ -183,9 +188,9 @@ func (a *application) collections(ctx context.Context, args []string) error {
 	}
 	sort.Slice(collections, func(i, j int) bool { return collections[i].Name < collections[j].Name })
 	for _, c := range collections {
-		a.logger.InfoContext(ctx, "collection found", "collection", c.Name)
+		a.logger.InfoContext(ctx, "collection found", "event", "collection.found", "collection", c.Name)
 	}
-	a.logger.InfoContext(ctx, "collections listed", "collection_count", len(collections))
+	a.logger.InfoContext(ctx, "collections listed", "event", "collections.listed", "collection_count", len(collections))
 	return nil
 }
 func (a *application) retention(ctx context.Context, args []string) error {
@@ -230,15 +235,15 @@ func (a *application) retention(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	a.logger.InfoContext(ctx, "retention plan built", "keep_last", plan.KeepLast, "snapshot_count", len(plan.SnapshotsToRemove))
+	a.logger.InfoContext(ctx, "retention plan built", "event", "retention.planned", "keep_last", plan.KeepLast, "snapshot_count", len(plan.SnapshotsToRemove))
 	for _, s := range plan.SnapshotsToRemove {
-		a.logger.InfoContext(ctx, "snapshot selected for removal", "key", s.Key, "collection", s.Collection, "node", s.Node)
+		a.logger.InfoContext(ctx, "snapshot selected for removal", "event", "retention.selected", "key", s.Key, "collection", s.Collection, "node", s.Node)
 	}
 	if action == "apply" {
 		if err = plan.Apply(ctx, store); err != nil {
 			return fmt.Errorf("apply retention: %w", err)
 		}
-		a.logger.InfoContext(ctx, "retention applied", "snapshot_count", len(plan.SnapshotsToRemove))
+		a.logger.InfoContext(ctx, "retention applied", "event", "retention.applied", "snapshot_count", len(plan.SnapshotsToRemove))
 	}
 	return nil
 }
@@ -295,9 +300,9 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		}
 		retention.SortNewestFirst(snapshots)
 		for _, s := range snapshots {
-			a.logger.InfoContext(ctx, "snapshot found", "name", s.Name+".snapshot", "key", s.Key, "collection", s.Collection, "node", s.Node, "last_modified", s.CreatedAt.UTC(), "size", s.Size)
+			a.logger.InfoContext(ctx, "snapshot found", "event", "snapshot.found", "name", s.Name+".snapshot", "key", s.Key, "collection", s.Collection, "node", s.Node, "last_modified", s.CreatedAt.UTC(), "size", s.Size)
 		}
-		a.logger.InfoContext(ctx, "snapshots listed", "collection", collection, "snapshot_count", len(snapshots))
+		a.logger.InfoContext(ctx, "snapshots listed", "event", "snapshots.listed", "collection", collection, "snapshot_count", len(snapshots))
 		return nil
 	}
 	cfg, err := a.qconfig(true)
@@ -308,7 +313,17 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	start := time.Now()
+	expected, attempted, successful, failed, cleanupFailures := 0, 0, 0, 0, 0
+	var uploadedBytes int64
 	var errs []error
+	defer func() {
+		outcome := "success"
+		if len(errs) > 0 {
+			outcome = "error"
+		}
+		a.logger.InfoContext(ctx, "backup run finished", "event", "backup.run_summary", "expected_count", expected, "successful_count", successful, "failed_count", failed, "skipped_count", expected-attempted, "cleanup_failed_count", cleanupFailures, "uploaded_bytes", uploadedBytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", expected == successful && len(errs) == 0)
+	}()
 	for _, node := range cfg.Nodes {
 		if ctx.Err() != nil {
 			errs = append(errs, ctx.Err())
@@ -324,18 +339,29 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 			}
 		}
 		sort.Slice(collections, func(i, j int) bool { return collections[i].Name < collections[j].Name })
+		expected += len(collections)
 		for _, c := range collections {
 			if ctx.Err() != nil {
 				errs = append(errs, ctx.Err())
 				break
 			}
+			attempted++
 			result, err := backup.Run(ctx, a.logger, client, store, c.Name, node.ID, keepSource)
+			if result.Stored {
+				successful++
+				uploadedBytes += result.Size
+				if err != nil {
+					cleanupFailures++
+				}
+			} else {
+				failed++
+			}
 			attrs := []any{"node", node.ID, "collection", c.Name, "key", result.Key, "size", result.Size, "sha256", result.SHA256, "stored", result.Stored, "source_deleted", result.SourceDeleted}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("node %s collection %s: %w", node.ID, c.Name, err))
-				a.logger.ErrorContext(ctx, "backup failed", append(attrs, "error", err)...)
+				a.logger.ErrorContext(ctx, "backup failed", append(attrs, "event", "backup.failed", "error", err)...)
 			} else {
-				a.logger.InfoContext(ctx, "backup completed", attrs...)
+				a.logger.InfoContext(ctx, "backup completed", append(attrs, "event", "backup.completed")...)
 			}
 		}
 	}

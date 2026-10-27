@@ -64,7 +64,9 @@ func start(ctx context.Context, version string, stderr io.Writer, httpClient *ht
 	// Exporter diagnostics stay local to avoid recursive OTLP logging failures.
 	otel.SetLogger(logr.FromSlogHandler(local))
 	diagnosticLogger := logger
-	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { diagnosticLogger.Error("OpenTelemetry diagnostic", "error", err) }))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		diagnosticLogger.Error("OpenTelemetry diagnostic", "event", "telemetry.diagnostic", "error", err)
+	}))
 	if strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
 		return logger, shutdown, nil
 	}

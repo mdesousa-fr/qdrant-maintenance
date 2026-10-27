@@ -106,7 +106,7 @@ func (c *Client) ListObjects(ctx context.Context) (result []storage.Object, err 
 		}
 
 		for _, obj := range page.Contents {
-			c.log().DebugContext(ctx, "S3 object found", "bucket", c.Bucket, "key", aws.ToString(obj.Key))
+			c.log().DebugContext(ctx, "S3 object found", "event", "storage.object_found", "bucket", c.Bucket, "key", aws.ToString(obj.Key))
 			objects = append(objects, storage.Object{
 				Key:          aws.ToString(obj.Key),
 				LastModified: aws.ToTime(obj.LastModified),
@@ -138,7 +138,7 @@ func (c *Client) DeleteObject(ctx context.Context, key string) (err error) {
 	}
 
 	c.log().InfoContext(ctx,
-		"object deleted",
+		"object deleted", "event", "storage.deleted",
 		"bucket", c.Bucket,
 		"key", key,
 	)
@@ -188,6 +188,6 @@ func sdkLogger(ctx context.Context, logger *slog.Logger) logging.Logger {
 		if classification == logging.Warn {
 			level = slog.LevelWarn
 		}
-		logger.Log(ctx, level, "AWS SDK diagnostic", "component", "s3", "message", fmt.Sprintf(format, args...))
+		logger.Log(ctx, level, "AWS SDK diagnostic", "event", "aws.diagnostic", "component", "s3", "message", fmt.Sprintf(format, args...))
 	})
 }

@@ -151,6 +151,17 @@ func TestDistributedCreateContinuesAfterPartialFailure(t *testing.T) {
 				found[key] = true
 			}
 			records := readLogs(t, out)
+			assertLog(t, records, "backup run finished", "successful_count", float64(want))
+			assertLog(t, records, "backup run finished", "expected_count", float64(4))
+			id := records[0]["run_id"]
+			if id == nil {
+				t.Fatal("missing run ID")
+			}
+			for _, record := range records {
+				if record["run_id"] != id || record["event"] == nil {
+					t.Fatalf("missing correlation or event: %+v", record)
+				}
+			}
 			results := []map[string]any{}
 			for _, record := range records {
 				if record["msg"] == "backup completed" || record["msg"] == "backup failed" {
