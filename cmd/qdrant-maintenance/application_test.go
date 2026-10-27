@@ -111,6 +111,12 @@ func TestDistributedCreateContinuesAfterPartialFailure(t *testing.T) {
 			app.qdrant = func(cfg config.QdrantConfig, node config.Node) backup.Qdrant {
 				server := testhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch {
+					case r.URL.Path == "/cluster":
+						peer := 1
+						if node.ID == "node-1" {
+							peer = 2
+						}
+						fmt.Fprintf(w, `{"result":{"status":"enabled","peer_id":%d,"peers":{"1":{},"2":{}}}}`, peer)
 					case r.URL.Path == "/collections":
 						fmt.Fprint(w, `{"result":{"collections":[{"name":"z"},{"name":"a"}]}}`)
 					case r.Method == http.MethodPost:

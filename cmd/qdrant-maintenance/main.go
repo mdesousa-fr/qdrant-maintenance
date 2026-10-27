@@ -22,6 +22,7 @@ import (
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/s3"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/storage"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/telemetry"
+	"github.com/mdesousa-fr/qdrant-maintenance/internal/topology"
 )
 
 const version = "1.0.0"
@@ -309,12 +310,24 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	clients := map[string]backup.Qdrant{}
+	endpoints := []topology.Endpoint{}
+	for _, node := range cfg.Nodes {
+		client := a.qdrant(cfg, node)
+		clients[node.ID] = client
+		endpoints = append(endpoints, topology.Endpoint{ID: node.ID, Client: client})
+	}
+	inventory, err := topology.Inspect(ctx, endpoints, collection)
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "cluster coverage validated", "event", "cluster.validated", "cluster_id", inventory.ClusterID, "expected_count", len(inventory.Pairs))
 	store, err := a.storage(ctx)
 	if err != nil {
 		return err
 	}
 	start := time.Now()
-	expected, attempted, successful, failed, cleanupFailures := 0, 0, 0, 0, 0
+	expected, attempted, successful, failed, cleanupFailures := len(inventory.Pairs), 0, 0, 0, 0
 	var uploadedBytes int64
 	var errs []error
 	defer func() {
@@ -324,46 +337,37 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		}
 		a.logger.InfoContext(ctx, "backup run finished", "event", "backup.run_summary", "expected_count", expected, "successful_count", successful, "failed_count", failed, "skipped_count", expected-attempted, "cleanup_failed_count", cleanupFailures, "uploaded_bytes", uploadedBytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", expected == successful && len(errs) == 0)
 	}()
-	for _, node := range cfg.Nodes {
+	for _, pair := range inventory.Pairs {
 		if ctx.Err() != nil {
 			errs = append(errs, ctx.Err())
 			break
 		}
-		client := a.qdrant(cfg, node)
-		collections := []qdrant.Collection{{Name: collection}}
-		if all {
-			collections, err = client.GetCollections(ctx)
+		attempted++
+
+		result, err := backup.Run(ctx, a.logger, clients[pair.Node], store, pair.Collection, pair.Node, keepSource)
+		if result.Stored {
+			successful++
+			uploadedBytes += result.Size
 			if err != nil {
-				errs = append(errs, fmt.Errorf("node %s: list collections: %w", node.ID, err))
-				continue
+				cleanupFailures++
 			}
+		} else {
+			failed++
 		}
-		sort.Slice(collections, func(i, j int) bool { return collections[i].Name < collections[j].Name })
-		expected += len(collections)
-		for _, c := range collections {
-			if ctx.Err() != nil {
-				errs = append(errs, ctx.Err())
-				break
-			}
-			attempted++
-			result, err := backup.Run(ctx, a.logger, client, store, c.Name, node.ID, keepSource)
-			if result.Stored {
-				successful++
-				uploadedBytes += result.Size
-				if err != nil {
-					cleanupFailures++
-				}
-			} else {
-				failed++
-			}
-			attrs := []any{"node", node.ID, "collection", c.Name, "key", result.Key, "size", result.Size, "sha256", result.SHA256, "stored", result.Stored, "source_deleted", result.SourceDeleted}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("node %s collection %s: %w", node.ID, c.Name, err))
-				a.logger.ErrorContext(ctx, "backup failed", append(attrs, "event", "backup.failed", "error", err)...)
-			} else {
-				a.logger.InfoContext(ctx, "backup completed", append(attrs, "event", "backup.completed")...)
-			}
+		attrs := []any{"node", pair.Node, "collection", pair.Collection, "key", result.Key, "size", result.Size, "sha256", result.SHA256, "stored", result.Stored, "source_deleted", result.SourceDeleted}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("node %s collection %s: %w", pair.Node, pair.Collection, err))
+			a.logger.ErrorContext(ctx, "backup failed", append(attrs, "event", "backup.failed", "error", err)...)
+		} else {
+			a.logger.InfoContext(ctx, "backup completed", append(attrs, "event", "backup.completed")...)
 		}
 	}
+	after, checkErr := topology.Inspect(ctx, endpoints, collection)
+	if checkErr != nil {
+		errs = append(errs, fmt.Errorf("final topology check: %w", checkErr))
+	} else if after.Signature() != inventory.Signature() {
+		errs = append(errs, fmt.Errorf("cluster topology changed during backup"))
+	}
+
 	return errors.Join(errs...)
 }

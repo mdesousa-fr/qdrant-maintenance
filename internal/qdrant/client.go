@@ -222,3 +222,24 @@ func (c *Client) DeleteSnapshot(ctx context.Context, collection, name string) er
 	_, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/collections/%s/snapshots/%s?wait=true", url.PathEscape(collection), url.PathEscape(name)))
 	return err
 }
+
+// Cluster reports this endpoint's peer identity and the complete membership view.
+type Cluster struct {
+	Status string                     `json:"status"`
+	PeerID uint64                     `json:"peer_id"`
+	Peers  map[string]json.RawMessage `json:"peers"`
+}
+
+func (c *Client) GetCluster(ctx context.Context) (Cluster, error) {
+	body, err := c.do(ctx, http.MethodGet, "/cluster")
+	if err != nil {
+		return Cluster{}, err
+	}
+	var response struct {
+		Result Cluster `json:"result"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return Cluster{}, fmt.Errorf("decode cluster: %w", err)
+	}
+	return response.Result, nil
+}

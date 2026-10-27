@@ -57,8 +57,9 @@ export AWS_REGION='eu-west-1'
 ```
 
 Configure **every node**, keep the IDs stable, and use pod-specific/headless DNS
-addresses. The CLI processes the configured endpoints; it does not discover or
-verify cluster membership. Load-balanced services are unsuitable because
+addresses. The CLI validates distinct peer identities, complete cluster membership, and
+consistent collection inventories at every configured endpoint before creating snapshots.
+Membership and collection inventory are checked again before reporting completion. Load-balanced services are unsuitable because
 creation, download, and deletion must reach the same node.
 
 Qdrant collection snapshots contain only the data on the node that creates them.
@@ -245,3 +246,8 @@ Command events include a stable `event` identifier and a `run_id`. Backup runs
 emit `backup.run_summary` with expected, successful, failed, skipped, and source
 cleanup failure counts, uploaded bytes, duration, outcome, and completeness.
 Identifiers are log attributes, never custom metric labels.
+
+Cluster validation fails before writes for missing peers, duplicate endpoints,
+unreachable nodes, or inconsistent inventories. Membership or collection changes
+during a run prevent completion. This checks cluster membership and collection
+names; it does not freeze writes or shard placement during the backup window.

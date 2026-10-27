@@ -19,6 +19,7 @@ import (
 )
 
 type Qdrant interface {
+	GetCluster(context.Context) (qdrant.Cluster, error)
 	GetCollections(context.Context) ([]qdrant.Collection, error)
 	CreateSnapshot(context.Context, string) (qdrant.Snapshot, error)
 	DownloadSnapshot(context.Context, string, string, io.Writer) error
