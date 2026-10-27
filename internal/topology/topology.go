@@ -135,3 +135,13 @@ func Inspect(ctx context.Context, endpoints []Endpoint, selector string) (Invent
 	}
 	return inventory, nil
 }
+
+// ClusterIdentity identifies membership independently of endpoint labels.
+func ClusterIdentity(nodes []Node) string {
+	peers := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		peers = append(peers, strconv.FormatUint(node.PeerID, 10))
+	}
+	sort.Strings(peers)
+	return hash(peers)
+}

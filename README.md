@@ -251,3 +251,7 @@ Cluster validation fails before writes for missing peers, duplicate endpoints,
 unreachable nodes, or inconsistent inventories. Membership or collection changes
 during a run prevent completion. This checks cluster membership and collection
 names; it does not freeze writes or shard placement during the backup window.
+
+Manifests use schema version 1 and live at `runs/<run_id>.json`, outside the
+snapshot key layout. Their writes use S3 conditional creation and ETag updates;
+unsupported or inconsistent manifests fail closed instead of driving deletion.

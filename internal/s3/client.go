@@ -34,6 +34,7 @@ type headAPI interface {
 
 type Client struct {
 	uploader uploadAPI
+	objects  objectAPI
 	verifier headAPI
 	Timeout  time.Duration
 	Bucket   string
@@ -73,7 +74,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 			}
 		},
 	)
-	return &Client{Bucket: bucket, client: sdkClient, verifier: sdkClient,
+	return &Client{Bucket: bucket, client: sdkClient, verifier: sdkClient, objects: sdkClient,
 		uploader: transfermanager.New(sdkClient, func(o *transfermanager.Options) {
 			o.Concurrency = 2
 			o.PartSizeBytes = 16 * 1024 * 1024

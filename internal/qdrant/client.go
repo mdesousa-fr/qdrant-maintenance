@@ -143,10 +143,10 @@ func (s snapshotJSON) toSnapshot() (Snapshot, error) {
 }
 
 type Snapshot struct {
-	Name         string
-	CreationTime time.Time
-	Size         uint64
-	Checksum     string
+	Name         string    `json:"name"`
+	CreationTime time.Time `json:"creation_time"`
+	Size         uint64    `json:"size"`
+	Checksum     string    `json:"checksum"`
 }
 
 func (c *Client) GetSnapshots(ctx context.Context, collectionName string) ([]Snapshot, error) {
