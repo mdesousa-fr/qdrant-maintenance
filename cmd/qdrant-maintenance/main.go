@@ -238,6 +238,9 @@ func (a *application) retention(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Policy == "run" {
+		return a.runRetention(ctx, store, cfg.KeepLast, action)
+	}
 	plan, err := retention.BuildPlan(ctx, store, cfg.KeepLast)
 	if err != nil {
 		return err

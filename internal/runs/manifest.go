@@ -50,7 +50,8 @@ type Manifest struct {
 	Error         string             `json:"error,omitempty"`
 	// Writer reserves side effects across retry, cleanup, verification and pruning.
 	// A terminated process may leave it set; explicit takeover requires its ETag.
-	Writer string `json:"writer,omitempty"`
+	Writer      string `json:"writer,omitempty"`
+	PruneTarget string `json:"prune_target,omitempty"`
 }
 
 func New(id, version, scope string, inventory topology.Inventory, keep bool) Manifest {
@@ -71,6 +72,9 @@ func (m Manifest) Validate() error {
 	case "running", "incomplete", "complete", "pruning", "pruned", "expired":
 	default:
 		return fmt.Errorf("invalid run state %q", m.State)
+	}
+	if m.State == "pruning" && m.PruneTarget != "pruned" && m.PruneTarget != "expired" {
+		return fmt.Errorf("invalid pruning target")
 	}
 	nodes := map[string]bool{}
 	peers := map[uint64]bool{}

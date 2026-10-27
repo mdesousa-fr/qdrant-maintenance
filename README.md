@@ -281,3 +281,12 @@ damaged. `qdrant_maintenance.backup.age` records the healthy run's age in second
 independently, so a backup job that never starts still becomes detectable. Alert
 on failed or missing freshness-check Jobs as well as backup failures. Checks
 require access to Qdrant for current membership and S3 for durable state.
+
+### Retention policy selection
+
+`RETENTION_POLICY=snapshot` remains the default. The optional `run` policy groups
+complete runs by cluster peer membership and collection scope, keeping the newest
+`RETENTION_KEEP_LAST` complete runs in each group. Incomplete, active, and known
+corrupt runs remain protected and do not replace healthy retained runs. Objects
+without manifests are unmanaged by run retention. Different historical peer sets
+remain separate groups so a topology change does not silently discard their sets.

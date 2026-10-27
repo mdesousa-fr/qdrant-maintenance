@@ -37,7 +37,10 @@ type StorageConfig struct {
 	ForcePathStyle bool
 	Timeout        time.Duration
 }
-type RetentionConfig struct{ KeepLast int }
+type RetentionConfig struct {
+	KeepLast int
+	Policy   string
+}
 
 // ValidSegment accepts collection/snapshot names without allowing path traversal
 // or control characters in logs and object keys.
@@ -142,7 +145,13 @@ func LoadStorage() (StorageConfig, error) {
 	return c, err
 }
 func LoadRetention() (RetentionConfig, error) {
-	c := RetentionConfig{KeepLast: defaultKeepLast}
+	c := RetentionConfig{KeepLast: defaultKeepLast, Policy: os.Getenv("RETENTION_POLICY")}
+	if c.Policy == "" {
+		c.Policy = "snapshot"
+	}
+	if c.Policy != "snapshot" && c.Policy != "run" {
+		return c, fmt.Errorf("RETENTION_POLICY must be snapshot or run")
+	}
 	if value := os.Getenv("RETENTION_KEEP_LAST"); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 0 {
