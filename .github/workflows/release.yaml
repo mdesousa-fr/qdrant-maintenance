@@ -12,10 +12,15 @@ jobs:
     uses: ./.github/workflows/test.yaml
   binaries:
     needs: checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -28,11 +33,23 @@ jobs:
           GIT_COMMIT: ${{ github.sha }}
           TARGET_ARCH: ${{ matrix.arch }}
         run: scripts/build-release.sh "$RELEASE_TAG" "$GIT_COMMIT" "$TARGET_ARCH" dist
+      - name: Verify release archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GIT_COMMIT: ${{ github.sha }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p smoke
+          tar -xzf "dist/qdrant-maintenance_${RELEASE_TAG#v}_linux_${TARGET_ARCH}.tar.gz" -C smoke
+          ./smoke/qdrant-maintenance help
+          ./smoke/qdrant-maintenance version > version.json 2>&1
+          jq -se --arg version "${RELEASE_TAG#v}" --arg commit "$GIT_COMMIT" 'any(.[]; .version == $version and .git_commit == $commit)' version.json
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: 7
   image:
     needs: [checks, binaries]
     runs-on: ubuntu-latest
@@ -55,12 +72,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - name: Publish multi-platform image to GHCR
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          cache-from: |
+            type=gha,scope=docker-amd64
+            type=gha,scope=docker-arm64
           build-args: |
             VERSION=${{ steps.image.outputs.version }}
             GIT_COMMIT=${{ github.sha }}

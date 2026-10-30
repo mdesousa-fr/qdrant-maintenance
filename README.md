@@ -357,12 +357,17 @@ overrides an active pruning/expired state or repairs objects automatically.
 ## Release automation
 
 Main-branch/PR checks run offline unit tests, race checks, static analysis, builds,
+Docker builds and container smoke tests on native Linux AMD64 and ARM64 runners,
 and a separate online `govulncheck` scan. Tagged stable versions (`vMAJOR.MINOR.PATCH`)
 run the same checks before building static Linux AMD64 and ARM64 archives and a
 multi-architecture image. The workflow publishes checksummed archives to GitHub
 Releases and the image to `ghcr.io/<owner>/<repository>:<version>` using
 `GITHUB_TOKEN`. Repository Actions/package permissions must permit publication.
 The CLI's version event includes `git_commit`; release builds embed both fields.
+Each release archive is extracted and its CLI help/version commands are tested on
+the matching architecture before uploading it. Release assets are named
+`qdrant-maintenance_<version>_linux_amd64.tar.gz` and
+`qdrant-maintenance_<version>_linux_arm64.tar.gz`, with a `SHA256SUMS` file.
 
 `scripts/build-release.sh v1.1.0 <git-sha> amd64 dist` prepares an archive locally
 without publishing anything. Docker builds accept `VERSION` and `GIT_COMMIT`

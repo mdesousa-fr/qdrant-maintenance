@@ -7,6 +7,40 @@ on:
 permissions:
   contents: read
 jobs:
+  docker:
+    name: Docker (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/${{ matrix.arch }}
+          tags: qdrant-maintenance:test
+          build-args: |
+            VERSION=ci
+            GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+      - name: Smoke test image
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          docker run --rm --network none qdrant-maintenance:test
+          docker run --rm --network none qdrant-maintenance:test version > version.json 2>&1
+          jq -se --arg commit "$GIT_COMMIT" 'any(.[]; .version == "ci" and .git_commit == $commit)' version.json
+          test "$(docker image inspect --format '{{.Config.User}}' qdrant-maintenance:test)" = '65532:65532'
   test:
     runs-on: ubuntu-latest
     steps:
