@@ -5,6 +5,76 @@ S3, and pruning stored snapshots, intended exclusively for cronjobs and Kubernet
 CronJobs. All command results, help, errors, and diagnostics are newline-delimited
 JSON logs on stderr. stdout stays empty. OpenTelemetry exports remain available.
 
+## Quickstart
+
+### Docker image
+
+Download the versioned image from [GitHub Container Registry](https://github.com/users/mdesousa-fr/packages/container/package/qdrant-maintenance):
+
+```sh
+docker pull ghcr.io/mdesousa-fr/qdrant-maintenance:1.0.0
+docker run --rm ghcr.io/mdesousa-fr/qdrant-maintenance:1.0.0 help
+docker run --rm ghcr.io/mdesousa-fr/qdrant-maintenance:1.0.0 version
+```
+
+Docker automatically selects the Linux AMD64 or ARM64 image for your platform.
+To run commands against your services, put the settings described in
+[Configuration](#configuration) in an `.env` file and pass it to the container:
+
+```sh
+docker run --rm --env-file .env \
+  ghcr.io/mdesousa-fr/qdrant-maintenance:1.0.0 collections
+```
+
+Service URLs must be reachable from inside the container.
+
+### Download the CLI
+
+Precompiled **Linux** binaries for AMD64 (x86-64) and ARM64 (aarch64) are available
+in [GitHub Releases](https://github.com/mdesousa-fr/qdrant-maintenance/releases).
+The commands below use version `1.0.0`; change `VERSION` to select another release.
+Run them on the Linux host where you will use the CLI.
+
+First, select the archive for your architecture:
+
+```sh
+VERSION=1.0.0
+case "$(uname -m)" in
+  x86_64) ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+ARCHIVE="qdrant-maintenance_${VERSION}_linux_${ARCH}.tar.gz"
+RELEASE_URL="https://github.com/mdesousa-fr/qdrant-maintenance/releases/download/v${VERSION}"
+```
+
+Download with **curl**:
+
+```sh
+curl --fail --location --output "$ARCHIVE" "$RELEASE_URL/$ARCHIVE"
+```
+
+Or download with **wget**:
+
+```sh
+wget --output-document="$ARCHIVE" "$RELEASE_URL/$ARCHIVE"
+```
+
+Extract with **tar**, install in your user's binary directory, and check the version:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+tar -xzf "$ARCHIVE" -C "$HOME/.local/bin" qdrant-maintenance
+export PATH="$HOME/.local/bin:$PATH"
+qdrant-maintenance version
+qdrant-maintenance help
+```
+
+Add `$HOME/.local/bin` to your shell's startup `PATH` to keep the CLI available in
+new terminals. Configure the environment variables in [Configuration](#configuration)
+before using commands that connect to Qdrant or S3. Help and version work without
+service configuration.
+
 ## Build and test
 
 Requires Go 1.26.10 or newer (patched toolchain).
