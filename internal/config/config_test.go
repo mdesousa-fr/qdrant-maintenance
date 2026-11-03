@@ -115,13 +115,14 @@ func TestStorageDoesNotRequireQdrant(t *testing.T) {
 	t.Setenv("S3_BUCKET", "backups")
 	t.Setenv("S3_ENDPOINT", "")
 	t.Setenv("S3_FORCE_PATH_STYLE", "")
+	t.Setenv("S3_INSECURE_SKIP_VERIFY", "")
 	t.Setenv("S3_TIMEOUT", "")
 	t.Setenv("AWS_REGION", "eu-west-1")
 	c, err := LoadStorage()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ForcePathStyle || c.Endpoint != "" || c.Bucket != "backups" {
+	if c.ForcePathStyle || c.InsecureSkipVerify || c.Endpoint != "" || c.Bucket != "backups" {
 		t.Fatal(c)
 	}
 	t.Setenv("S3_ENDPOINT", "http://s3.test:9000")
@@ -134,9 +135,10 @@ func TestInvalidSettings(t *testing.T) {
 	t.Setenv("S3_BUCKET", "backups")
 	t.Setenv("S3_ENDPOINT", "")
 	t.Setenv("S3_FORCE_PATH_STYLE", "")
+	t.Setenv("S3_INSECURE_SKIP_VERIFY", "")
 	t.Setenv("S3_TIMEOUT", "")
 	for _, tc := range []struct{ key, value string }{
-		{"S3_BUCKET", ""}, {"S3_ENDPOINT", "ftp://bad"}, {"S3_FORCE_PATH_STYLE", "maybe"}, {"S3_TIMEOUT", "0s"}, {"S3_TIMEOUT", "bad"},
+		{"S3_BUCKET", ""}, {"S3_ENDPOINT", "ftp://bad"}, {"S3_FORCE_PATH_STYLE", "maybe"}, {"S3_INSECURE_SKIP_VERIFY", "maybe"}, {"S3_TIMEOUT", "0s"}, {"S3_TIMEOUT", "bad"},
 	} {
 		t.Run(tc.key+tc.value, func(t *testing.T) {
 			t.Setenv(tc.key, tc.value)
@@ -150,6 +152,25 @@ func TestInvalidSettings(t *testing.T) {
 			t.Setenv("RETENTION_KEEP_LAST", value)
 			if _, err := LoadRetention(); err == nil {
 				t.Fatal("invalid retention accepted")
+			}
+		})
+	}
+}
+
+func TestStorageTLSVerification(t *testing.T) {
+	t.Setenv("S3_BUCKET", "backups")
+	t.Setenv("S3_ENDPOINT", "")
+	t.Setenv("S3_FORCE_PATH_STYLE", "")
+	t.Setenv("S3_TIMEOUT", "")
+	for _, value := range []string{"", "false", "true"} {
+		t.Run("skip="+value, func(t *testing.T) {
+			t.Setenv("S3_INSECURE_SKIP_VERIFY", value)
+			cfg, err := LoadStorage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.InsecureSkipVerify != (value == "true") {
+				t.Fatalf("InsecureSkipVerify = %v for %q", cfg.InsecureSkipVerify, value)
 			}
 		})
 	}

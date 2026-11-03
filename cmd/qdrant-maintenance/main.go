@@ -81,7 +81,7 @@ func newApplication(logger *slog.Logger) *application {
 		if err != nil {
 			return nil, err
 		}
-		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint)
+		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint, cfg.InsecureSkipVerify)
 		if err != nil {
 			return nil, err
 		}

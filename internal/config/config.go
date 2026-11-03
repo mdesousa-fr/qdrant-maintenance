@@ -31,11 +31,12 @@ type QdrantConfig struct {
 	Timeout time.Duration
 }
 type StorageConfig struct {
-	Endpoint       string
-	Bucket         string
-	Region         string
-	ForcePathStyle bool
-	Timeout        time.Duration
+	Endpoint           string
+	Bucket             string
+	Region             string
+	ForcePathStyle     bool
+	InsecureSkipVerify bool
+	Timeout            time.Duration
 }
 type RetentionConfig struct {
 	KeepLast int
@@ -133,6 +134,12 @@ func LoadStorage() (StorageConfig, error) {
 		}
 	}
 	var err error
+	if value := os.Getenv("S3_INSECURE_SKIP_VERIFY"); value != "" {
+		c.InsecureSkipVerify, err = strconv.ParseBool(value)
+		if err != nil {
+			return c, fmt.Errorf("S3_INSECURE_SKIP_VERIFY must be a boolean")
+		}
+	}
 	if value := os.Getenv("S3_FORCE_PATH_STYLE"); value != "" {
 		c.ForcePathStyle, err = strconv.ParseBool(value)
 		if err != nil {

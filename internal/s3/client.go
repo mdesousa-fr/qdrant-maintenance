@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,7 +46,7 @@ type Client struct {
 // Ensure Client implement storage.Client.
 var _ storage.Client = (*Client)(nil)
 
-func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string) (*Client, error) {
+func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool) (*Client, error) {
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("s3 client: bucket name is empty")
 	}
@@ -68,6 +69,10 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 		awsConfig,
 		func(opts *awss3.Options) {
 			opts.UsePathStyle = forcePathStyle
+			// Keep this override local to S3; credential providers retain verified TLS.
+			if insecureSkipVerify {
+				opts.HTTPClient = &http.Client{Transport: otelhttp.NewTransport(insecureTransport())}
+			}
 
 			if endpoint != "" {
 				opts.BaseEndpoint = &endpoint
@@ -81,6 +86,16 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 			o.FailTimeout = 5 * time.Second
 		}),
 		Timeout: 30 * time.Minute, logger: logger.With("component", "s3")}, nil
+}
+
+func insecureTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	// Explicitly enabled by S3_INSECURE_SKIP_VERIFY for untrusted certificates.
+	transport.TLSClientConfig.InsecureSkipVerify = true
+	return transport
 }
 
 func (c *Client) ListObjects(ctx context.Context) (result []storage.Object, err error) {

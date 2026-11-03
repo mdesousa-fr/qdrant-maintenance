@@ -136,7 +136,7 @@ func TestNewClientEmptyBucket(t *testing.T) {
 		t.Run(
 			test.name,
 			func(t *testing.T) {
-				client, err := NewClient(context.Background(), nil, test.input, "eu-west1", true, "empty")
+				client, err := NewClient(context.Background(), nil, test.input, "eu-west1", true, "empty", false)
 				if err == nil {
 					t.Fatalf("expected an error, got nil")
 				}

@@ -106,6 +106,7 @@ process environment; it does not automatically load `.env` files.
 | `S3_BUCKET` | Required for snapshot listing, creation, and retention. Use a dedicated bucket for one cluster. |
 | `S3_ENDPOINT` | Optional HTTP(S) endpoint for S3-compatible storage. Empty uses AWS's regional endpoint. |
 | `S3_FORCE_PATH_STYLE` | Boolean; defaults to `true` for custom endpoints and `false` for AWS. |
+| `S3_INSECURE_SKIP_VERIFY` | Boolean; default `false`. Set to `true` to skip certificate and hostname verification for all S3 operations. Applies only to S3; use for trusted endpoints with self-signed certificates. |
 | `AWS_REGION` | AWS region; falls back to `AWS_DEFAULT_REGION` and the SDK configuration chain. |
 | `S3_TIMEOUT` | Positive duration per storage operation, including upload and verification; default `30m`. |
 | `RETENTION_POLICY` | `snapshot` (default) or `run` for complete manifest-backed sets. |
