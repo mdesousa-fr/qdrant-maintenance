@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.10 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:0c050feb47802ae436b9030833694a0b80160d08e3b3049ad30bf7c9e724e09d AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
