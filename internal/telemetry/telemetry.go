@@ -26,6 +26,7 @@ import (
 	metricSDK "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	traceSDK "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const scope = "github.com/mdesousa-fr/qdrant-maintenance"
@@ -200,4 +201,46 @@ func Deleted(ctx context.Context) {
 func BackupAge(ctx context.Context, seconds float64) {
 	g, _ := otel.Meter(scope).Float64Gauge("qdrant_maintenance.backup.age", metric.WithUnit("s"))
 	g.Record(ctx, seconds)
+}
+
+// Phase records a timed phase with detailed log identity and low-cardinality metrics.
+// Byte rates describe the whole phase, including retries. Size is logged separately
+// from transferred bytes because creation and verification do not transfer a body.
+func Phase(ctx context.Context, logger *slog.Logger, name string, attrs ...any) (context.Context, func(int64, error)) {
+	phaseCtx, finish := Operation(ctx, name)
+	if identity, ok := ctx.Value(backupIdentityKey{}).([2]string); ok {
+		attrs = append([]any{"node", identity[0], "collection", identity[1]}, attrs...)
+	}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, keyOK := attrs[i].(string)
+		value, valueOK := attrs[i+1].(string)
+		if keyOK && valueOK {
+			trace.SpanFromContext(phaseCtx).SetAttributes(attribute.String(key, value))
+		}
+	}
+	start := time.Now()
+	return phaseCtx, func(size int64, err error) {
+		elapsed := time.Since(start).Seconds()
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+		}
+		fields := append([]any{"event", name + ".finished", "duration_seconds", elapsed, "size", size, "outcome", outcome}, attrs...)
+		if (name == "snapshot.download" || name == "s3.upload.transfer") && elapsed > 0 {
+			fields = append(fields, "bytes_per_second", float64(size)/elapsed)
+		}
+		if err != nil {
+			fields = append(fields, "error", err)
+		}
+		logger.InfoContext(phaseCtx, "backup phase finished", fields...)
+		finish(err)
+	}
+}
+
+type backupIdentityKey struct{}
+
+// BackupContext carries log identity through storage interfaces without using
+// node, collection or object keys as metric dimensions.
+func BackupContext(ctx context.Context, node, collection string) context.Context {
+	return context.WithValue(ctx, backupIdentityKey{}, [2]string{node, collection})
 }

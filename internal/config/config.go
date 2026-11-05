@@ -31,6 +31,8 @@ type QdrantConfig struct {
 	Timeout time.Duration
 }
 type StorageConfig struct {
+	UploadConcurrency  int
+	UploadPartSizeMiB  int64
 	Endpoint           string
 	Bucket             string
 	Region             string
@@ -149,7 +151,22 @@ func LoadStorage() (StorageConfig, error) {
 		c.ForcePathStyle = c.Endpoint != ""
 	}
 	c.Timeout, err = duration("S3_TIMEOUT", 30*time.Minute)
-	return c, err
+	if err != nil {
+		return c, err
+	}
+	c.UploadConcurrency, err = positiveInt("S3_UPLOAD_CONCURRENCY", 2)
+	if err != nil {
+		return c, err
+	}
+	partSize, err := positiveInt("S3_UPLOAD_PART_SIZE_MIB", 16)
+	if err != nil {
+		return c, err
+	}
+	if partSize < 5 || partSize > 5120 {
+		return c, fmt.Errorf("S3_UPLOAD_PART_SIZE_MIB must be between 5 and 5120")
+	}
+	c.UploadPartSizeMiB = int64(partSize)
+	return c, nil
 }
 func LoadRetention() (RetentionConfig, error) {
 	c := RetentionConfig{KeepLast: defaultKeepLast, Policy: os.Getenv("RETENTION_POLICY")}
@@ -181,4 +198,31 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{Qdrant: q, Retention: r}, nil
+}
+
+// ParallelNodes resolves only the selected source, so an explicit flag overrides
+// an invalid environment value as well as a valid one.
+func ParallelNodes(value int, explicit bool) (int, error) {
+	if !explicit {
+		var err error
+		value, err = positiveInt("QDRANT_PARALLEL_NODES", 1)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("--parallel-nodes must be a positive integer")
+	}
+	return value, nil
+}
+func positiveInt(name string, fallback int) (int, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return n, nil
 }

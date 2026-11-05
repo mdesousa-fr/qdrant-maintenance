@@ -226,3 +226,26 @@ func TestExporterDiagnosticIsOneJSONRecord(t *testing.T) {
 		t.Fatal("diagnostic spans multiple lines")
 	}
 }
+
+func TestPhaseIdentityOutcomeAndRates(t *testing.T) {
+	for _, name := range []string{"snapshot.create", "snapshot.download", "s3.upload.transfer", "s3.upload.verify"} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&out, nil))
+			ctx := BackupContext(context.Background(), "node-1", "docs")
+			_, finish := Phase(ctx, logger, name, "key", "docs/node-1/file.snapshot")
+			finish(123, errors.New("failed"))
+			var record map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["node"] != "node-1" || record["collection"] != "docs" || record["outcome"] != "error" || record["size"] != float64(123) || record["event"] != name+".finished" || record["duration_seconds"].(float64) < 0 {
+				t.Fatal(record)
+			}
+			_, hasRate := record["bytes_per_second"]
+			if hasRate != (name == "snapshot.download" || name == "s3.upload.transfer") {
+				t.Fatal(record)
+			}
+		})
+	}
+}

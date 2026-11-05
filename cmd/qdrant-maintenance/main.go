@@ -61,12 +61,15 @@ type snapshotStore interface {
 	storage.Repository
 }
 type application struct {
-	logger          *slog.Logger
-	runID           string
-	storage         func(context.Context) (snapshotStore, error)
-	qdrant          func(config.QdrantConfig, config.Node) backup.Qdrant
-	qconfig         func(bool) (config.QdrantConfig, error)
-	retentionConfig func() (config.RetentionConfig, error)
+	parallelNodes     int
+	uploadConcurrency int
+	uploadPartSizeMiB int64
+	logger            *slog.Logger
+	runID             string
+	storage           func(context.Context) (snapshotStore, error)
+	qdrant            func(config.QdrantConfig, config.Node) backup.Qdrant
+	qconfig           func(bool) (config.QdrantConfig, error)
+	retentionConfig   func() (config.RetentionConfig, error)
 }
 
 func newApplication(logger *slog.Logger) *application {
@@ -81,11 +84,13 @@ func newApplication(logger *slog.Logger) *application {
 		if err != nil {
 			return nil, err
 		}
-		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint, cfg.InsecureSkipVerify)
+		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint, cfg.InsecureSkipVerify, s3.UploadOptions{Concurrency: cfg.UploadConcurrency, PartSizeMiB: cfg.UploadPartSizeMiB})
 		if err != nil {
 			return nil, err
 		}
 		client.Timeout = cfg.Timeout
+		app.uploadConcurrency = cfg.UploadConcurrency
+		app.uploadPartSizeMiB = cfg.UploadPartSizeMiB
 		return client, nil
 	}
 	return app
@@ -266,7 +271,7 @@ func (a *application) retention(ctx context.Context, args []string) error {
 	return nil
 }
 func (a *application) snapshots(ctx context.Context, args []string) error {
-	const usage = "qdrant-maintenance snapshots list <collection> | snapshots create [--all | <collection>] [--keep-source] | snapshots verify --run <run_id> | --collection <name> --node <node> (flags before collection)"
+	const usage = "qdrant-maintenance snapshots list <collection> | snapshots create [--all | <collection>] [--keep-source] [--parallel-nodes N] | snapshots verify --run <run_id> | --collection <name> --node <node> (flags before collection)"
 	if len(args) == 0 {
 		return fmt.Errorf("snapshots action is required")
 	}
@@ -283,13 +288,27 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 	}
 	fs := quietFlags("snapshots " + action)
 	all, keepSource := false, false
+	parallelNodes := 1
 	if action == "create" {
 		fs.BoolVar(&all, "all", false, "back up all collections on every configured node")
 		fs.BoolVar(&keepSource, "keep-source", false, "retain snapshots on Qdrant after upload")
+		fs.IntVar(&parallelNodes, "parallel-nodes", 1, "maximum concurrent nodes (QDRANT_PARALLEL_NODES; default 1)")
 	}
 	help, err := a.parse(ctx, fs, args[1:], usage)
 	if err != nil || help {
 		return err
+	}
+	if action == "create" {
+		explicit := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "parallel-nodes" {
+				explicit = true
+			}
+		})
+		parallelNodes, err = config.ParallelNodes(parallelNodes, explicit)
+		if err != nil {
+			return err
+		}
 	}
 	if all && fs.NArg() != 0 {
 		return fmt.Errorf("--all cannot be combined with a collection name")
@@ -349,7 +368,8 @@ func (a *application) snapshots(ctx context.Context, args []string) error {
 		return err
 	}
 	start := time.Now()
-	engine := runs.Engine{Repo: runs.Repository{Store: store}, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
+	a.parallelNodes = parallelNodes
+	engine := runs.Engine{ParallelNodes: parallelNodes, Repo: runs.Repository{Store: store}, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
 		return topology.Inspect(ctx, endpoints, collection)
 	}}
 	manifest, runErr := engine.Create(ctx, runs.New(a.runID, version, collection, inventory, keepSource))
@@ -377,7 +397,12 @@ func (a *application) logRunSummary(ctx context.Context, manifest runs.Manifest,
 	if runErr != nil {
 		outcome = "error"
 	}
-	attrs := []any{"event", event, "expected_count", len(manifest.Entries), "successful_count", successful, "failed_count", failed, "skipped_count", skipped, "cleanup_failed_count", cleanupFailures, "stored_bytes", bytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", manifest.State == "complete"}
+	parallel := a.parallelNodes
+	if parallel <= 0 {
+		parallel = 1
+	}
+	parallel = min(parallel, len(manifest.Inventory.Nodes))
+	attrs := []any{"parallel_nodes", parallel, "s3_upload_concurrency", a.uploadConcurrency, "s3_upload_part_size_mib", a.uploadPartSizeMiB, "event", event, "expected_count", len(manifest.Entries), "successful_count", successful, "failed_count", failed, "skipped_count", skipped, "cleanup_failed_count", cleanupFailures, "stored_bytes", bytes, "duration_seconds", time.Since(start).Seconds(), "outcome", outcome, "complete", manifest.State == "complete"}
 	if event == "backup.run_summary" {
 		attrs = append(attrs, "uploaded_bytes", bytes)
 	}

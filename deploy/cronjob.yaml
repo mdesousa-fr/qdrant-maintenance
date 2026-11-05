@@ -41,6 +41,13 @@ spec:
                   value: eu-west-1
                 - name: QDRANT_TIMEOUT
                   value: 30m
+                # Measure at 1, then trial 2 and 3; one backup per node at a time.
+                - name: QDRANT_PARALLEL_NODES
+                  value: "1"
+                - name: S3_UPLOAD_CONCURRENCY
+                  value: "2"
+                - name: S3_UPLOAD_PART_SIZE_MIB
+                  value: "16"
                 - name: S3_TIMEOUT
                   value: 30m
                 - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -56,14 +63,16 @@ spec:
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+              # Example trial budget for up to three ~20 GiB temporary files.
+              # Tune requests/limits from measured usage before production rollout.
               resources:
                 requests:
-                  cpu: 100m
-                  memory: 128Mi
-                  ephemeral-storage: 10Gi
-                limits:
-                  cpu: "1"
+                  cpu: 500m
                   memory: 256Mi
+                  ephemeral-storage: 75Gi
+                limits:
+                  cpu: "2"
+                  memory: 1Gi
                   ephemeral-storage: 100Gi
               volumeMounts:
                 - name: snapshots
