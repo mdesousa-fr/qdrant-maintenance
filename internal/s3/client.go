@@ -52,23 +52,40 @@ type UploadOptions struct {
 	PartSizeMiB int64
 }
 
-func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool, uploadOptions ...UploadOptions) (*Client, error) {
+// ClientOption configures optional S3 client policies.
+type ClientOption func(*clientOptions)
+type clientOptions struct {
+	requestChecksum aws.RequestChecksumCalculation
+	upload          UploadOptions
+}
+
+// WithRequestChecksumCalculation overrides direct writes and transfer uploads.
+func WithRequestChecksumCalculation(policy aws.RequestChecksumCalculation) ClientOption {
+	return func(o *clientOptions) { o.requestChecksum = policy }
+}
+
+// WithUploadOptions overrides nonzero multipart settings, retaining defaults for zero fields.
+func WithUploadOptions(upload UploadOptions) ClientOption {
+	return func(o *clientOptions) {
+		if upload.Concurrency != 0 {
+			o.upload.Concurrency = upload.Concurrency
+		}
+		if upload.PartSizeMiB != 0 {
+			o.upload.PartSizeMiB = upload.PartSizeMiB
+		}
+	}
+}
+
+func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool, options ...ClientOption) (*Client, error) {
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("s3 client: bucket name is empty")
 	}
 
-	upload := UploadOptions{Concurrency: 2, PartSizeMiB: 16}
-	if len(uploadOptions) > 1 {
-		return nil, errors.New("s3 client: expected at most one upload configuration")
+	settings := clientOptions{upload: UploadOptions{Concurrency: 2, PartSizeMiB: 16}}
+	for _, option := range options {
+		option(&settings)
 	}
-	if len(uploadOptions) == 1 {
-		if uploadOptions[0].Concurrency != 0 {
-			upload.Concurrency = uploadOptions[0].Concurrency
-		}
-		if uploadOptions[0].PartSizeMiB != 0 {
-			upload.PartSizeMiB = uploadOptions[0].PartSizeMiB
-		}
-	}
+	upload := settings.upload
 	if upload.Concurrency <= 0 || upload.PartSizeMiB < 5 || upload.PartSizeMiB > 5120 {
 		return nil, errors.New("s3 client: upload concurrency must be positive and part size must be 5..5120 MiB")
 	}
@@ -90,6 +107,9 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 		awsConfig,
 		func(opts *awss3.Options) {
 			opts.UsePathStyle = forcePathStyle
+			if settings.requestChecksum != aws.RequestChecksumCalculationUnset {
+				opts.RequestChecksumCalculation = settings.requestChecksum
+			}
 			// Keep this override local to S3; credential providers retain verified TLS.
 			if insecureSkipVerify {
 				opts.HTTPClient = &http.Client{Transport: otelhttp.NewTransport(insecureTransport())}
@@ -101,7 +121,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 		},
 	)
 	return &Client{Bucket: bucket, client: sdkClient, verifier: sdkClient, objects: sdkClient,
-		uploader: newTransferManager(sdkClient, upload),
+		uploader: newTransferManager(sdkClient, upload, settings.requestChecksum),
 		Timeout:  30 * time.Minute, logger: logger.With("component", "s3")}, nil
 }
 
@@ -233,8 +253,9 @@ func sdkLogger(ctx context.Context, logger *slog.Logger) logging.Logger {
 	})
 }
 
-func newTransferManager(client transfermanager.S3APIClient, upload UploadOptions) *transfermanager.Client {
+func newTransferManager(client transfermanager.S3APIClient, upload UploadOptions, policy aws.RequestChecksumCalculation) *transfermanager.Client {
 	return transfermanager.New(client, func(o *transfermanager.Options) {
+		o.RequestChecksumCalculation = policy
 		o.Concurrency = upload.Concurrency
 		o.PartSizeBytes = upload.PartSizeMiB * 1024 * 1024
 		o.FailTimeout = 5 * time.Second

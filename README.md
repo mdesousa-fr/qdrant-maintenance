@@ -111,6 +111,7 @@ process environment; it does not automatically load `.env` files.
 | `S3_FORCE_PATH_STYLE` | Boolean; defaults to `true` for custom endpoints and `false` for AWS. |
 | `S3_INSECURE_SKIP_VERIFY` | Boolean; default `false`. Set to `true` to skip certificate and hostname verification for all S3 operations. Applies only to S3; use for trusted endpoints with self-signed certificates. |
 | `AWS_REGION` | AWS region; falls back to `AWS_DEFAULT_REGION` and the SDK configuration chain. |
+| `S3_REQUEST_CHECKSUM` | Optional `when_supported` or `when_required`. When set, overrides `AWS_REQUEST_CHECKSUM_CALCULATION` for both direct S3 writes and snapshot transfers. When absent, the SDK retains its AWS configuration and the transfer manager defaults to `when_supported`. Use `when_required` for backends rejecting automatic checksum trailers. |
 | `S3_TIMEOUT` | Positive duration per storage operation, including upload and verification; default `30m`. |
 | `RETENTION_POLICY` | `snapshot` (default) or `run` for complete manifest-backed sets. |
 | `RETENTION_KEEP_LAST` | Nonnegative count per collection/node (`snapshot`) or complete runs per coverage group (`run`); default `5`. |
@@ -202,7 +203,7 @@ For each node and collection, the CLI:
 4. Uploads to `<collection>/<node>/<snapshot-name>.snapshot`, using multipart
    transfers for large files, configurable workers (default two), and configurable
    parts (default 16 MiB). The AWS SDK provides
-   request retries and transport checksums.
+   request retries and transport checksums according to `S3_REQUEST_CHECKSUM`.
 5. Checks the committed object's size and SHA-256 metadata with `HeadObject`.
 6. Deletes the Qdrant copy, unless `--keep-source` is set.
 
@@ -568,3 +569,88 @@ Rollback: set `QDRANT_PARALLEL_NODES=1`, remove any overriding CLI flag, and res
 `S3_UPLOAD_CONCURRENCY=2` / `S3_UPLOAD_PART_SIZE_MIB=16`. Existing backup formats and
 coverage rules are unchanged. Replica selection and direct streaming are outside
 this change.
+
+
+### NetApp checksum qualification and debug image
+
+`S3_REQUEST_CHECKSUM=when_required` disables optional automatic request checksums
+for both snapshots and manifests. It preserves the application's SHA-256 metadata
+and post-upload size/metadata checks. Those checks do not recalculate the stored
+content hash: use `snapshots verify` to download and hash the stored content.
+Keep HTTPS enabled. This compatibility setting removes the SDK's optional
+transport checksum verification; it does not disable TLS certificate validation.
+
+Confirm the NetApp product (ONTAP S3 or StorageGRID), its version, and any gateway
+in front of it when recording qualification results. The tests exercise the actual
+SDK and your configured endpoint without requiring Qdrant.
+
+Use an existing test bucket and credentials permitting PutObject, GetObject,
+DeleteObject and AbortMultipartUpload. The suite writes under a randomly generated
+`qdrant-maintenance-integration/<id>/` prefix and deletes only its own objects.
+It tests 1 KiB and 33 MiB snapshots (the latter exceeds the 16 MiB multipart
+threshold), metadata, full SHA-256 verification after download, overwrite rejection,
+and conditional manifest creation/update including stale ETag rejection.
+Cleanup failures report the remaining object keys. Interrupted processes may leave
+objects or multipart uploads; configure a bucket lifecycle rule to abort incomplete
+multipart uploads.
+
+Run from source with your normal S3 environment (`S3_ENDPOINT`, `S3_BUCKET`,
+`AWS_REGION`, credentials or workload identity, and optional path-style/TLS settings):
+
+```sh
+S3_INTEGRATION_TEST=1 S3_REQUEST_CHECKSUM=when_required \
+  go test -tags=integration ./internal/s3 -run '^TestNetApp$' -v -count=1 -timeout=15m
+```
+
+Repeat with `S3_REQUEST_CHECKSUM=when_supported` to reproduce the original issue.
+A passing `when_required` run qualifies the exercised operations on that endpoint;
+if both modes pass, the original failure has not been reproduced.
+Without `S3_INTEGRATION_TEST=1`, the source test skips all external operations.
+
+Release candidates use tags such as `v1.1.1-rc.1` and are published as GitHub
+prereleases, without changing the latest stable release. Each release publishes
+both normal and debug images for linux/amd64 and linux/arm64:
+
+- `ghcr.io/mdesousa-fr/qdrant-maintenance:1.1.1-rc.1`
+- `ghcr.io/mdesousa-fr/qdrant-maintenance:1.1.1-rc.1-debug`
+
+The debug image includes the CLI, a BusyBox shell and precompiled integration
+tests. It runs as UID/GID 65532 and needs no Go toolchain or dependency downloads.
+Its default command runs only `TestNetApp` and refuses to start without explicit
+opt-in. Create `netapp-test.env` using Docker env-file syntax (`KEY=value`, without
+`export`); keep credentials outside version control:
+
+```text
+S3_INTEGRATION_TEST=1
+S3_REQUEST_CHECKSUM=when_required
+S3_ENDPOINT=https://your-netapp-endpoint
+S3_BUCKET=your-test-bucket
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-test-access-key
+AWS_SECRET_ACCESS_KEY=your-test-secret-key
+```
+
+```sh
+docker run --rm --env-file netapp-test.env \
+  ghcr.io/mdesousa-fr/qdrant-maintenance:1.1.1-rc.1-debug
+
+# Interactive shell with the same test configuration:
+docker run --rm -it --env-file netapp-test.env --entrypoint /busybox/sh \
+  ghcr.io/mdesousa-fr/qdrant-maintenance:1.1.1-rc.1-debug
+# Inside the container: /run-s3-integration -test.run='^TestNetApp$' -test.v -test.timeout=15m
+```
+
+For private certificate authorities, mount your CA bundle read-only and set
+`SSL_CERT_FILE` to its container path. Ensure `/tmp` is writable for test files;
+a read-only container filesystem requires a writable `/tmp` mount of at least
+64 MiB. Shell commands are available under `/busybox`.
+
+To build the debug image locally:
+
+```sh
+docker build --target debug -t qdrant-maintenance:debug .
+```
+
+The default Docker target remains the normal runtime image. Build and publication
+are driven by the existing release workflow; RC archives include the full
+`-rc.N` suffix in their version and filename.

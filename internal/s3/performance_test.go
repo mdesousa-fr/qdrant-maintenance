@@ -45,7 +45,7 @@ func TestConfiguredMultipartTransfers(t *testing.T) {
 	for _, tc := range []UploadOptions{{Concurrency: 1, PartSizeMiB: 5}, {Concurrency: 3, PartSizeMiB: 7}} {
 		t.Run(fmt.Sprintf("workers-%d-part-%dMiB", tc.Concurrency, tc.PartSizeMiB), func(t *testing.T) {
 			sdk := &parallelMultipart{started: make(chan struct{}, 8), release: make(chan struct{})}
-			client := Client{Bucket: "bucket", uploader: newTransferManager(sdk, tc), verifier: sdk}
+			client := Client{Bucket: "bucket", uploader: newTransferManager(sdk, tc, aws.RequestChecksumCalculationUnset), verifier: sdk}
 			file, err := os.CreateTemp(t.TempDir(), "multipart")
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +89,7 @@ func TestConfiguredMultipartTransfers(t *testing.T) {
 }
 func TestInvalidUploadOptionsFailBeforeAWSConfiguration(t *testing.T) {
 	for _, opts := range []UploadOptions{{Concurrency: -1}, {PartSizeMiB: 4}, {PartSizeMiB: 5121}} {
-		if _, err := NewClient(context.Background(), nil, "bucket", "region", false, "", false, opts); err == nil {
+		if _, err := NewClient(context.Background(), nil, "bucket", "region", false, "", false, WithUploadOptions(opts)); err == nil {
 			t.Fatalf("accepted %+v", opts)
 		}
 	}

@@ -33,6 +33,7 @@ type QdrantConfig struct {
 type StorageConfig struct {
 	UploadConcurrency  int
 	UploadPartSizeMiB  int64
+	RequestChecksum    string
 	Endpoint           string
 	Bucket             string
 	Region             string
@@ -134,6 +135,12 @@ func LoadStorage() (StorageConfig, error) {
 		if err := endpoint(c.Endpoint); err != nil {
 			return c, fmt.Errorf("S3_ENDPOINT: %w", err)
 		}
+	}
+	c.RequestChecksum = os.Getenv("S3_REQUEST_CHECKSUM")
+	switch c.RequestChecksum {
+	case "", "when_supported", "when_required":
+	default:
+		return c, fmt.Errorf("S3_REQUEST_CHECKSUM must be when_supported or when_required")
 	}
 	var err error
 	if value := os.Getenv("S3_INSECURE_SKIP_VERIFY"); value != "" {
