@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
@@ -19,12 +20,13 @@ type BackupStore interface {
 	backup.Storage
 }
 type Engine struct {
-	Repo    Repository
-	Store   BackupStore
-	Clients map[string]backup.Qdrant
-	Logger  *slog.Logger
-	Recover bool
-	Inspect func(context.Context) (topology.Inventory, error)
+	Repo          Repository
+	Store         BackupStore
+	Clients       map[string]backup.Qdrant
+	Logger        *slog.Logger
+	Recover       bool
+	ParallelNodes int
+	Inspect       func(context.Context) (topology.Inventory, error)
 }
 
 func (e Engine) Create(ctx context.Context, m Manifest) (result Manifest, err error) {
@@ -37,27 +39,110 @@ func (e Engine) Create(ctx context.Context, m Manifest) (result Manifest, err er
 	return e.execute(ctx, &record)
 }
 func (e Engine) execute(ctx context.Context, record *Record) (Manifest, error) {
+	// Workers own private entries. Only this coordinator mutates the manifest
+	// and its ETag. A checkpoint acknowledgement gates subsequent side effects.
+	type update struct {
+		index        int
+		entry        Entry
+		ack          chan error
+		operationErr error
+	}
+	workCtx, cancelWork := context.WithCancel(ctx)
+	defer cancelWork()
+	updates := make(chan update)
+	groups := [][]int{}
+	nodeGroup := map[string]int{}
+	for i, entry := range record.Manifest.Entries {
+		g, exists := nodeGroup[entry.Node]
+		if !exists {
+			g = len(groups)
+			nodeGroup[entry.Node] = g
+			groups = append(groups, nil)
+		}
+		groups[g] = append(groups[g], i)
+	}
+	parallel := e.ParallelNodes
+	if parallel <= 0 {
+		parallel = 1
+	}
+	parallel = min(parallel, len(groups))
+	e.Logger.InfoContext(ctx, "backup concurrency configured", "event", "backup.concurrency", "parallel_nodes", parallel, "requested_parallel_nodes", e.ParallelNodes)
+	// Copy all work before workers start; the coordinator will mutate record.
+	entries := append([]Entry(nil), record.Manifest.Entries...)
+	keepSource := record.Manifest.KeepSource
+	jobs := make(chan []int)
+	var wg sync.WaitGroup
+	for range parallel {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for indexes := range jobs {
+				for _, i := range indexes {
+					if workCtx.Err() != nil {
+						break
+					}
+					entry := entries[i]
+					checkpoint := func() error {
+						ack := make(chan error, 1)
+						updates <- update{index: i, entry: entry, ack: ack}
+						return <-ack
+					}
+					opErr, persistErr := e.transfer(workCtx, &entry, keepSource, checkpoint)
+					if persistErr != nil {
+						return
+					}
+					updates <- update{index: i, entry: entry, operationErr: opErr}
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, indexes := range groups {
+			if workCtx.Err() != nil {
+				return
+			}
+			select {
+			case jobs <- indexes:
+			case <-workCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(updates) }()
 	var errs []error
-	for i := range record.Manifest.Entries {
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, err)
-			break
+	var persistErr error
+	for u := range updates {
+		if u.ack != nil {
+			if persistErr == nil {
+				record.Manifest.Entries[u.index] = u.entry
+				persistErr = e.save(ctx, record)
+				if persistErr != nil {
+					e.Logger.ErrorContext(ctx, "backup checkpoint failed", "event", "backup.checkpoint_failed", "node", u.entry.Node, "collection", u.entry.Collection, "key", u.entry.Key, "error", persistErr)
+					cancelWork()
+				}
+			}
+			u.ack <- persistErr
+			continue
 		}
-		entry := &record.Manifest.Entries[i]
-		operationErr, persistErr := e.transfer(ctx, record, i)
-		if persistErr != nil {
-			return record.Manifest, errors.Join(append(errs, persistErr)...)
-		}
-		if operationErr != nil {
-			errs = append(errs, operationErr)
+		entry := u.entry
+		if u.operationErr != nil {
+			errs = append(errs, u.operationErr)
 		}
 		attrs := []any{"event", "backup.completed", "node", entry.Node, "collection", entry.Collection, "key", entry.Key, "size", entry.Size, "sha256", entry.SHA256, "stored", entry.Stored, "source_deleted", entry.SourceDeleted}
-		if operationErr != nil {
+		if u.operationErr != nil {
 			attrs[1] = "backup.failed"
-			e.Logger.ErrorContext(ctx, "backup failed", append(attrs, "error", operationErr)...)
+			e.Logger.ErrorContext(ctx, "backup failed", append(attrs, "error", u.operationErr)...)
 		} else {
 			e.Logger.InfoContext(ctx, "backup completed", attrs...)
 		}
+	}
+	// An uncertain write must retain the writer reservation for explicit takeover.
+	if persistErr != nil {
+		return record.Manifest, errors.Join(append(errs, persistErr)...)
+	}
+	if ctx.Err() != nil {
+		errs = append(errs, ctx.Err())
 	}
 	after, checkErr := e.Inspect(ctx)
 	if checkErr != nil {
@@ -92,22 +177,27 @@ func (e Engine) execute(ctx context.Context, record *Record) (Manifest, error) {
 	}
 	return record.Manifest, errors.Join(errs...)
 }
-func (e Engine) transfer(ctx context.Context, record *Record, index int) (operationErr, persistErr error) {
-	entry := &record.Manifest.Entries[index]
+func (e Engine) transfer(ctx context.Context, entry *Entry, keepSource bool, checkpoint func() error) (operationErr, persistErr error) {
+	ctx = telemetry.BackupContext(ctx, entry.Node, entry.Collection)
 	client := e.Clients[entry.Node]
 	if client == nil {
-		return nil, fmt.Errorf("node %s has no client", entry.Node)
+		err := fmt.Errorf("node %s has no client", entry.Node)
+		entry.Error = err.Error()
+		return err, checkpoint()
 	}
 	entry.Error = ""
-	fail := func(err error) (error, error) { entry.Error = err.Error(); return err, e.save(ctx, record) }
+	fail := func(err error) (error, error) { entry.Error = err.Error(); return err, checkpoint() }
 	if entry.Snapshot == nil {
-		snapshot, err := client.CreateSnapshot(ctx, entry.Collection)
+		phaseCtx, finish := telemetry.Phase(ctx, e.Logger, "snapshot.create")
+		snapshot, err := client.CreateSnapshot(phaseCtx, entry.Collection)
+		finish(int64(snapshot.Size), err)
 		if err != nil {
 			return fail(fmt.Errorf("create snapshot: %w", err))
 		}
 		entry.Snapshot = &snapshot
 		entry.Key = entry.Collection + "/" + entry.Node + "/" + snapshot.Name
-		if err := e.save(ctx, record); err != nil {
+		e.Logger.InfoContext(ctx, "snapshot identity received", "event", "snapshot.received", "node", entry.Node, "collection", entry.Collection, "key", entry.Key)
+		if err := checkpoint(); err != nil {
 			return nil, err
 		}
 	}
@@ -122,7 +212,7 @@ func (e Engine) transfer(ctx context.Context, record *Record, index int) (operat
 				return fail(err)
 			}
 			entry.Stored = false
-			if err := e.save(ctx, record); err != nil {
+			if err := checkpoint(); err != nil {
 				return nil, err
 			}
 		}
@@ -144,19 +234,22 @@ func (e Engine) transfer(ctx context.Context, record *Record, index int) (operat
 		entry.SHA256 = result.SHA256
 		entry.Stored = true
 		entry.VerifyError = ""
-		if err := e.save(ctx, record); err != nil {
+		if err := checkpoint(); err != nil {
 			return nil, err
 		}
 	}
 
-	if !record.Manifest.KeepSource && !entry.SourceDeleted {
+	if !keepSource && !entry.SourceDeleted {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
 		err := client.DeleteSnapshot(ctx, entry.Collection, entry.Snapshot.Name)
 		var status *qdrant.HTTPError
 		if err != nil && !(errors.As(err, &status) && status.StatusCode == 404) {
 			return fail(fmt.Errorf("backup stored but source cleanup failed: %w", err))
 		}
 		entry.SourceDeleted = true
-		if err := e.save(ctx, record); err != nil {
+		if err := checkpoint(); err != nil {
 			return nil, err
 		}
 	}

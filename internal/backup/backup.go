@@ -79,6 +79,7 @@ func Run(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, coll
 // Transfer downloads and verifies an existing snapshot without deleting it.
 // Callers persist the successful result before performing source cleanup.
 func Transfer(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage, collection, node string, snapshot qdrant.Snapshot) (result Result, err error) {
+	ctx = telemetry.BackupContext(ctx, node, collection)
 	ctx, finish := telemetry.Operation(ctx, "backup.transfer")
 	defer func() {
 		if err != nil {
@@ -98,21 +99,33 @@ func Transfer(ctx context.Context, logger *slog.Logger, q Qdrant, store Storage,
 		return result, fmt.Errorf("create temporary file: %w", err)
 	}
 	defer func() { file.Close(); os.Remove(file.Name()) }()
-	hash := sha256.New()
-	if err = q.DownloadSnapshot(ctx, collection, snapshot.Name, io.MultiWriter(file, hash)); err != nil {
-		return result, fmt.Errorf("download snapshot (source retained): %w", err)
+	phaseCtx, finishDownload := telemetry.Phase(ctx, logger, "snapshot.download", "key", result.Key)
+	err = func() error {
+		hash := sha256.New()
+		if err = q.DownloadSnapshot(phaseCtx, collection, snapshot.Name, io.MultiWriter(file, hash)); err != nil {
+			return fmt.Errorf("download snapshot (source retained): %w", err)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		result.Size = info.Size()
+		result.SHA256 = hex.EncodeToString(hash.Sum(nil))
+		if uint64(result.Size) != snapshot.Size {
+			return fmt.Errorf("snapshot size mismatch: got %d, expected %d (source retained)", result.Size, snapshot.Size)
+		}
+		if snapshot.Checksum != "" && !strings.EqualFold(snapshot.Checksum, result.SHA256) {
+			return fmt.Errorf("snapshot checksum mismatch (source retained)")
+		}
+		return nil
+	}()
+	// Include bytes downloaded before a failure when the temporary file is readable.
+	if info, statErr := file.Stat(); statErr == nil {
+		result.Size = info.Size()
 	}
-	info, err := file.Stat()
+	finishDownload(result.Size, err)
 	if err != nil {
 		return result, err
-	}
-	result.Size = info.Size()
-	result.SHA256 = hex.EncodeToString(hash.Sum(nil))
-	if uint64(result.Size) != snapshot.Size {
-		return result, fmt.Errorf("snapshot size mismatch: got %d, expected %d (source retained)", result.Size, snapshot.Size)
-	}
-	if snapshot.Checksum != "" && !strings.EqualFold(snapshot.Checksum, result.SHA256) {
-		return result, fmt.Errorf("snapshot checksum mismatch (source retained)")
 	}
 	if _, err = file.Seek(0, io.SeekStart); err != nil {
 		return result, err

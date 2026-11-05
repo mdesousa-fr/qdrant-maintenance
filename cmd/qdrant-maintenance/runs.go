@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/config"
@@ -14,7 +15,7 @@ import (
 )
 
 func (a *application) runs(ctx context.Context, args []string) error {
-	const usage = "qdrant-maintenance runs list | check --max-age <duration> [--collection <name>] | retry|cleanup [--takeover] <run_id> | expire --older-than <duration> [--apply] [--takeover]"
+	const usage = "qdrant-maintenance runs list | check --max-age <duration> [--collection <name>] | retry [--takeover] [--parallel-nodes N] <run_id> | cleanup [--takeover] <run_id> | expire --older-than <duration> [--apply] [--takeover]"
 	if len(args) == 0 {
 		return fmt.Errorf("runs action is required")
 	}
@@ -146,13 +147,33 @@ func (a *application) recoverRun(ctx context.Context, args []string, cleanup boo
 		action = "cleanup"
 	}
 	fs := quietFlags("runs " + action)
+	parallelNodes := 1
+	if !cleanup {
+		fs.IntVar(&parallelNodes, "parallel-nodes", 1, "maximum concurrent nodes (QDRANT_PARALLEL_NODES; default 1)")
+	}
 	takeover := fs.Bool("takeover", false, "take over only after the previous process has terminated")
-	help, err := a.parse(ctx, fs, args, "qdrant-maintenance runs "+action+" [--takeover] <run_id>")
+	usage := "qdrant-maintenance runs " + action + " [--takeover] "
+	if !cleanup {
+		usage += "[--parallel-nodes N] "
+	}
+	help, err := a.parse(ctx, fs, args, usage+"<run_id>")
 	if err != nil || help {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("one run ID is required")
+	}
+	if !cleanup {
+		explicit := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "parallel-nodes" {
+				explicit = true
+			}
+		})
+		parallelNodes, err = config.ParallelNodes(parallelNodes, explicit)
+		if err != nil {
+			return err
+		}
 	}
 	id := fs.Arg(0)
 	store, err := a.storage(ctx)
@@ -170,7 +191,8 @@ func (a *application) recoverRun(ctx context.Context, args []string, cleanup boo
 	if err != nil {
 		return err
 	}
-	engine := runs.Engine{Repo: repo, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
+	a.parallelNodes = parallelNodes
+	engine := runs.Engine{ParallelNodes: parallelNodes, Repo: repo, Store: store, Clients: clients, Logger: a.logger, Inspect: func(ctx context.Context) (topology.Inventory, error) {
 		return topology.Inspect(ctx, endpoints, record.Manifest.Scope)
 	}}
 	start := time.Now()

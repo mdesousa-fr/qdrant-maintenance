@@ -46,11 +46,32 @@ type Client struct {
 // Ensure Client implement storage.Client.
 var _ storage.Client = (*Client)(nil)
 
-func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool) (*Client, error) {
+// UploadOptions configures each upload independently; zero fields use defaults.
+type UploadOptions struct {
+	Concurrency int
+	PartSizeMiB int64
+}
+
+func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool, uploadOptions ...UploadOptions) (*Client, error) {
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("s3 client: bucket name is empty")
 	}
 
+	upload := UploadOptions{Concurrency: 2, PartSizeMiB: 16}
+	if len(uploadOptions) > 1 {
+		return nil, errors.New("s3 client: expected at most one upload configuration")
+	}
+	if len(uploadOptions) == 1 {
+		if uploadOptions[0].Concurrency != 0 {
+			upload.Concurrency = uploadOptions[0].Concurrency
+		}
+		if uploadOptions[0].PartSizeMiB != 0 {
+			upload.PartSizeMiB = uploadOptions[0].PartSizeMiB
+		}
+	}
+	if upload.Concurrency <= 0 || upload.PartSizeMiB < 5 || upload.PartSizeMiB > 5120 {
+		return nil, errors.New("s3 client: upload concurrency must be positive and part size must be 5..5120 MiB")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -80,12 +101,8 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 		},
 	)
 	return &Client{Bucket: bucket, client: sdkClient, verifier: sdkClient, objects: sdkClient,
-		uploader: transfermanager.New(sdkClient, func(o *transfermanager.Options) {
-			o.Concurrency = 2
-			o.PartSizeBytes = 16 * 1024 * 1024
-			o.FailTimeout = 5 * time.Second
-		}),
-		Timeout: 30 * time.Minute, logger: logger.With("component", "s3")}, nil
+		uploader: newTransferManager(sdkClient, upload),
+		Timeout:  30 * time.Minute, logger: logger.With("component", "s3")}, nil
 }
 
 func insecureTransport() *http.Transport {
@@ -179,15 +196,23 @@ func (c *Client) Upload(ctx context.Context, key string, file *os.File, size int
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	_, err = c.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
+	transferCtx, finishTransfer := telemetry.Phase(ctx, c.log(), "s3.upload.transfer", "key", key)
+	_, err = c.uploader.UploadObject(transferCtx, &transfermanager.UploadObjectInput{
 		Bucket: aws.String(c.Bucket), Key: aws.String(key), Body: file, ContentLength: aws.Int64(size),
 		Metadata: map[string]string{"sha256": checksum}, ContentType: aws.String("application/octet-stream"),
 		IfNoneMatch: aws.String("*"),
 	})
+	transferred := size
+	if err != nil {
+		transferred = 0
+	} // SDK does not report partial committed bytes.
+	finishTransfer(transferred, err)
 	if err != nil {
 		return fmt.Errorf("upload %q: %w", key, err)
 	}
-	head, err := c.verifier.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: aws.String(c.Bucket), Key: aws.String(key)})
+	verifyCtx, finishVerify := telemetry.Phase(ctx, c.log(), "s3.upload.verify", "key", key)
+	defer func() { finishVerify(size, err) }()
+	head, err := c.verifier.HeadObject(verifyCtx, &awss3.HeadObjectInput{Bucket: aws.String(c.Bucket), Key: aws.String(key)})
 	if err != nil {
 		return fmt.Errorf("verify %q: %w", key, err)
 	}
@@ -205,5 +230,13 @@ func sdkLogger(ctx context.Context, logger *slog.Logger) logging.Logger {
 			level = slog.LevelWarn
 		}
 		logger.Log(ctx, level, "AWS SDK diagnostic", "event", "aws.diagnostic", "component", "s3", "message", fmt.Sprintf(format, args...))
+	})
+}
+
+func newTransferManager(client transfermanager.S3APIClient, upload UploadOptions) *transfermanager.Client {
+	return transfermanager.New(client, func(o *transfermanager.Options) {
+		o.Concurrency = upload.Concurrency
+		o.PartSizeBytes = upload.PartSizeMiB * 1024 * 1024
+		o.FailTimeout = 5 * time.Second
 	})
 }

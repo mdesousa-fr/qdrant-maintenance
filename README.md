@@ -103,6 +103,9 @@ process environment; it does not automatically load `.env` files.
 | `QDRANT_URL` | Optional endpoint for listing collections. Defaults to the first configured node. Never used as a backup fallback. |
 | `QDRANT_API_KEY` | Optional API key; configure it when authentication is enabled. |
 | `QDRANT_TIMEOUT` | Positive Go duration per Qdrant HTTP request, including snapshot creation/download; default `30m`. |
+| `QDRANT_PARALLEL_NODES` | Maximum concurrent nodes for `snapshots create` and `runs retry`; positive integer, default `1`. Explicit `--parallel-nodes` takes precedence. |
+| `S3_UPLOAD_CONCURRENCY` | Positive multipart worker count per upload; default `2`. |
+| `S3_UPLOAD_PART_SIZE_MIB` | Multipart part size in MiB, integer from `5` to `5120`; default `16`. The SDK may increase parts for large files. |
 | `S3_BUCKET` | Required for snapshot listing, creation, and retention. Use a dedicated bucket for one cluster. |
 | `S3_ENDPOINT` | Optional HTTP(S) endpoint for S3-compatible storage. Empty uses AWS's regional endpoint. |
 | `S3_FORCE_PATH_STYLE` | Boolean; defaults to `true` for custom endpoints and `false` for AWS. |
@@ -135,8 +138,7 @@ Membership and collection inventory are checked again before reporting completio
 creation, download, and deletion must reach the same node.
 
 Qdrant collection snapshots contain only the data on the node that creates them.
-A collection backup therefore needs all its nodes' snapshots. Sequential node
-snapshots are not a cluster-wide atomic point-in-time backup, and collection
+A collection backup therefore needs all its nodes' snapshots. Node snapshots, including parallel snapshots, are not a cluster-wide atomic point-in-time backup, and collection
 aliases are not included. See [Qdrant's snapshot documentation](https://qdrant.tech/documentation/snapshots/).
 Restore orchestration and alias backup are outside this CLI's current scope.
 
@@ -198,7 +200,8 @@ For each node and collection, the CLI:
 2. Streams its download into a private temporary file and computes SHA-256.
 3. Validates the byte count and Qdrant checksum, when supplied.
 4. Uploads to `<collection>/<node>/<snapshot-name>.snapshot`, using multipart
-   transfers for large files, two workers, and 16 MiB parts. The AWS SDK provides
+   transfers for large files, configurable workers (default two), and configurable
+   parts (default 16 MiB). The AWS SDK provides
    request retries and transport checksums.
 5. Checks the committed object's size and SHA-256 metadata with `HeadObject`.
 6. Deletes the Qdrant copy, unless `--keep-source` is set.
@@ -207,7 +210,7 @@ Uploads use conditional creation to avoid overwriting an existing backup key. A
 key collision is reported as a failure, and the Qdrant copy is retained.
 
 Temporary files are removed on return, including errors. Provision temporary disk
-space for the largest individual snapshot. Memory does not grow with snapshot
+space for the sum of the largest simultaneous snapshots, plus a safety margin. Memory does not grow with snapshot
 size. Interrupted multipart uploads are aborted on a best-effort basis; an S3
 lifecycle rule for incomplete multipart uploads handles abrupt pod termination.
 
@@ -461,3 +464,67 @@ bucket-wide lock: schedule creation and retention windows to avoid overlap, and
 do not run different retention policies concurrently. Conditional writes detect
 conflicts rather than silently overwriting another writer's state. No reservation
 is automatically stolen based on elapsed time.
+
+### Snapshot performance rollout
+
+All nodes remain required. Each node processes its collections sequentially;
+`--parallel-nodes` limits how many nodes can progress at once. The default is one.
+An explicit flag overrides `QDRANT_PARALLEL_NODES`, including an invalid environment
+value. Invalid selected values fail before backup work starts. Values above the
+node count are accepted and capped to the available nodes. Retry uses the current
+settings and preserves the recorded snapshot identities and manifest schema.
+
+```sh
+QDRANT_PARALLEL_NODES=2 qdrant-maintenance snapshots create --all
+qdrant-maintenance snapshots create --parallel-nodes 3 documents
+qdrant-maintenance runs retry --parallel-nodes 2 <run_id>
+```
+
+A single coordinator writes manifest checkpoints with the existing ETag conditions.
+Workers wait for durable checkpoints before proceeding; source deletion requires a
+verified upload and its successfully acknowledged checkpoint. A checkpoint failure
+cancels outstanding work, stops scheduling and retains the writer reservation for
+explicit recovery. Already-authorized remote operations may finish. Ordinary entry
+failures do not stop other entries. Signal cancellation drains workers before final
+state persistence. A final topology check is still required for completion.
+
+The `snapshot.create.finished`, `snapshot.download.finished`,
+`s3.upload.transfer.finished`, and `s3.upload.verify.finished` events distinguish
+creation, download plus SHA-256/validation, S3 upload, and S3 metadata verification.
+They include duration, size, outcome and backup identity. Transfer rates cover the
+whole timed phase including retries. Failed S3 transfers report zero bytes because
+the SDK does not expose partial committed bytes here. Existing events are retained;
+the interval from `snapshot.created` to `snapshot.stored` still includes both
+network transfers. Phase metrics use only operation/outcome dimensions. Run summaries
+include effective node concurrency and configured multipart settings.
+
+Before production activation:
+
+1. Run at node concurrency `1`, multipart concurrency `2`, and parts `16` MiB.
+   Record per-phase duration/rate, peak RSS, CPU/throttling, temporary disk usage,
+   network utilization, and Qdrant request latency/error rate under comparable load.
+2. Trial node concurrency `2`, then `3`, keeping multipart settings fixed. Stop
+   increasing concurrency if resource limits or the application's latency/error
+   budget are exceeded. Allow for simultaneous disk and network load on Qdrant.
+3. If S3 upload remains limiting, compare multipart concurrency `2` and `4`, then
+   parts `16`, `32`, and `64` MiB, changing one parameter at a time. The multipart
+   concurrency pool is per upload: up to node concurrency × upload concurrency parts
+   can be in flight. Measure RSS rather than assuming a fixed buffer allocation;
+   uploads use seekable files. Provision disk for concurrent full temporary files.
+4. The CronJob's 2 CPU / 1 GiB memory limit, 75 GiB ephemeral-storage request and
+   100 GiB temporary-volume limit are example trial budgets for three ~20 GiB
+   snapshots. Adapt to collection sizes, observed memory/CPU and node capacity;
+   keep `concurrencyPolicy: Forbid`. Confirm the actual production deployment.
+5. Check S3 region/endpoint and VPC route tables for the job's subnets; confirm
+   whether the S3 gateway endpoint is used instead of NAT. This requires access to
+   the deployment/infrastructure and cannot be established from this repository.
+6. Verify a complete backup, exercise interruption plus `runs retry`, then restore
+   onto an isolated compatible Qdrant cluster and validate collections/data. Keep
+   production and test storage resources separate. Content verification alone is
+   not a restore test. Approximately 20 minutes is an experimental target for the
+   three-node case, not a guarantee; record actual results before acceptance.
+
+Rollback: set `QDRANT_PARALLEL_NODES=1`, remove any overriding CLI flag, and restore
+`S3_UPLOAD_CONCURRENCY=2` / `S3_UPLOAD_PART_SIZE_MIB=16`. Existing backup formats and
+coverage rules are unchanged. Replica selection and direct streaming are outside
+this change.
