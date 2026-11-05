@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/backup"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/config"
 	"github.com/mdesousa-fr/qdrant-maintenance/internal/qdrant"
@@ -81,7 +82,14 @@ func newApplication(logger *slog.Logger) *application {
 		if err != nil {
 			return nil, err
 		}
-		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint, cfg.InsecureSkipVerify)
+		var checksumOptions []s3.ClientOption
+		switch cfg.RequestChecksum {
+		case "when_supported":
+			checksumOptions = append(checksumOptions, s3.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenSupported))
+		case "when_required":
+			checksumOptions = append(checksumOptions, s3.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired))
+		}
+		client, err := s3.NewClient(ctx, app.logger, cfg.Bucket, cfg.Region, cfg.ForcePathStyle, cfg.Endpoint, cfg.InsecureSkipVerify, checksumOptions...)
 		if err != nil {
 			return nil, err
 		}

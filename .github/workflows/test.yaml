@@ -41,6 +41,34 @@ jobs:
           docker run --rm --network none qdrant-maintenance:test version > version.json 2>&1
           jq -se --arg commit "$GIT_COMMIT" 'any(.[]; .version == "ci" and .git_commit == $commit)' version.json
           test "$(docker image inspect --format '{{.Config.User}}' qdrant-maintenance:test)" = '65532:65532'
+  debug:
+    name: Debug image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: debug
+          load: true
+          platforms: linux/${{ matrix.arch }}
+          tags: qdrant-maintenance:debug-test
+      - name: Smoke test debug tools without network
+        run: |
+          docker run --rm --network none --entrypoint /busybox/sh qdrant-maintenance:debug-test -c 'test -x /qdrant-maintenance && test -x /s3-integration.test'
+          docker run --rm --network none --entrypoint /s3-integration.test qdrant-maintenance:debug-test -test.list '^TestNetApp$' | grep -x TestNetApp
+          if docker run --rm --network none qdrant-maintenance:debug-test; then
+            echo 'Integration runner must require explicit opt-in' >&2
+            exit 1
+          fi
   test:
     runs-on: ubuntu-latest
     steps:
@@ -52,6 +80,7 @@ jobs:
       - name: Formatting
         run: test -z "$(gofmt -l cmd internal)"
       - run: go test -race ./...
+      - run: go test -tags=integration ./internal/s3 -run '^TestNetApp$' -v
       - run: go vet ./...
       - run: go build ./cmd/qdrant-maintenance
   vulnerabilities:
