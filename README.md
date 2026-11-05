@@ -425,6 +425,46 @@ no Qdrant requests. It reserves manifests while updating verification records;
 `--takeover` is available only after the previous writer has terminated. It never
 overrides an active pruning/expired state or repairs objects automatically.
 
+## Dependency updates
+
+[Renovate](https://docs.renovatebot.com/) is configured in
+[`renovate.json`](renovate.json) to open dependency update PRs. To activate it,
+install the [Renovate GitHub App](https://github.com/apps/renovate), grant it access
+only to this repository, merge the configuration into the default branch, and
+complete onboarding if prompted. The hosted app needs no additional workflow or
+repository secret.
+
+Routine update PRs are scheduled for Mondays between 06:00 and 11:00
+(`Europe/Paris`), subject to the hosted app's execution times, with at most five
+open concurrently. Security update PRs can bypass these limits. All PRs require
+manual merging. The Dependency Dashboard issue lists pending updates and errors;
+major Go module migrations require approval there before a PR is opened.
+
+Coverage includes Go modules and checksums, Dockerfile and Compose images,
+GitHub Actions, and the pinned `govulncheck` version in workflows. Go updates are
+grouped across `go.mod`, the Docker build image, and the documented requirement.
+AWS SDK, OpenTelemetry, and GitHub Actions minor/patch updates are grouped by
+family; major updates remain separate. Docker images are pinned to digests by
+Renovate PRs, allowing changes behind tags such as `latest` and `nonroot` to be
+reviewed. Application image versions in deployment examples remain part of the
+release process.
+
+Existing PR checks validate tests, static analysis, reachable vulnerabilities,
+and Docker builds on AMD64 and ARM64. Before merging Go updates, check that
+`go.mod` and `go.sum` are consistent; before merging toolchain updates, check that
+the minimum Go version and Docker image version agree. Compose services are not
+integration-tested by these checks and need manual verification when updated.
+
+Validate configuration changes using a Node.js version supported by the current
+Renovate release:
+
+```sh
+npx --yes --package renovate -- renovate-config-validator --strict renovate.json
+```
+
+To pause updates, add `"enabled": false` to the configuration. Remove the app's
+repository access in GitHub to disable it immediately.
+
 ## Release automation
 
 Main-branch/PR checks run offline unit tests, race checks, static analysis, builds,

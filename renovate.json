@@ -1,0 +1,68 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "docker:pinDigests"],
+  "enabledManagers": ["gomod", "dockerfile", "docker-compose", "github-actions", "custom.regex"],
+  "dependencyDashboard": true,
+  "timezone": "Europe/Paris",
+  "schedule": ["* 6-10 * * 1"],
+  "prConcurrentLimit": 5,
+  "automerge": false,
+  "postUpdateOptions": ["gomodTidy"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "go run golang\\.org/x/vuln/cmd/govulncheck@(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)\\s"
+      ],
+      "depNameTemplate": "golang.org/x/vuln",
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["Requires Go (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) or newer"],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the minimum Go version current alongside the build image",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Update Go in go.mod, Dockerfile, and README together",
+      "matchDepNames": ["go", "golang"],
+      "groupName": "Go toolchain"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["/^github\\.com/aws/aws-sdk-go-v2($|/)/", "github.com/aws/smithy-go"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "AWS SDK"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["/^go\\.opentelemetry\\.io/"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "OpenTelemetry"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Review major Go module migrations in the dashboard before opening PRs",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["major"],
+      "groupName": null,
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
