@@ -44,7 +44,7 @@ jobs:
           ./smoke/qdrant-maintenance help
           ./smoke/qdrant-maintenance version > version.json 2>&1
           jq -se --arg version "${RELEASE_TAG#v}" --arg commit "$GIT_COMMIT" 'any(.[]; .version == $version and .git_commit == $commit)' version.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/*.tar.gz
@@ -96,7 +96,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-linux-*
           merge-multiple: true
