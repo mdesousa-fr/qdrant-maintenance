@@ -1,11 +1,11 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.19
+    image: qdrant/qdrant:v1.19@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
     ports:
       - 6333:6333
 
   rustfs:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:latest@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
     environment:
       RUSTFS_ACCESS_KEY: qdrant
       RUSTFS_SECRET_KEY: qdrant-secret
@@ -20,7 +20,7 @@ services:
       - rustfs-data:/data
 
   rustfs-init:
-    image: rustfs/rc:latest
+    image: rustfs/rc:latest@sha256:7e93fd410a8fe51514f89373e093392c92095b98dc6140335fcfe956810c4c80
     depends_on:
       - rustfs
     environment:
