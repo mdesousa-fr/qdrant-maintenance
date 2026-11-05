@@ -51,6 +51,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   image:
+    strategy:
+      matrix:
+        include:
+          - target: runtime
+            suffix: ''
+          - target: debug
+            suffix: '-debug'
     needs: [checks, binaries]
     runs-on: ubuntu-latest
     permissions:
@@ -76,9 +83,10 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}${{ matrix.suffix }}
           cache-from: |
             type=gha,scope=docker-amd64
             type=gha,scope=docker-arm64
@@ -108,4 +116,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$RELEASE_TAG"
+        run: |
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then
+            prerelease=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes --title "$RELEASE_TAG" "${prerelease[@]}"

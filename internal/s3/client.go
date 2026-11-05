@@ -46,9 +46,26 @@ type Client struct {
 // Ensure Client implement storage.Client.
 var _ storage.Client = (*Client)(nil)
 
-func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool) (*Client, error) {
+// ClientOption configures an optional S3 client policy.
+type ClientOption func(*clientOptions)
+
+type clientOptions struct {
+	requestChecksum aws.RequestChecksumCalculation
+}
+
+// WithRequestChecksumCalculation overrides both direct writes and transfer uploads.
+func WithRequestChecksumCalculation(policy aws.RequestChecksumCalculation) ClientOption {
+	return func(o *clientOptions) { o.requestChecksum = policy }
+}
+
+func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region string, forcePathStyle bool, endpoint string, insecureSkipVerify bool, options ...ClientOption) (*Client, error) {
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("s3 client: bucket name is empty")
+	}
+
+	settings := clientOptions{}
+	for _, option := range options {
+		option(&settings)
 	}
 
 	if logger == nil {
@@ -69,6 +86,9 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 		awsConfig,
 		func(opts *awss3.Options) {
 			opts.UsePathStyle = forcePathStyle
+			if settings.requestChecksum != aws.RequestChecksumCalculationUnset {
+				opts.RequestChecksumCalculation = settings.requestChecksum
+			}
 			// Keep this override local to S3; credential providers retain verified TLS.
 			if insecureSkipVerify {
 				opts.HTTPClient = &http.Client{Transport: otelhttp.NewTransport(insecureTransport())}
@@ -81,6 +101,7 @@ func NewClient(ctx context.Context, logger *slog.Logger, bucket string, region s
 	)
 	return &Client{Bucket: bucket, client: sdkClient, verifier: sdkClient, objects: sdkClient,
 		uploader: transfermanager.New(sdkClient, func(o *transfermanager.Options) {
+			o.RequestChecksumCalculation = settings.requestChecksum
 			o.Concurrency = 2
 			o.PartSizeBytes = 16 * 1024 * 1024
 			o.FailTimeout = 5 * time.Second

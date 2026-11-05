@@ -6,8 +6,8 @@ release_commit="${2:?Git commit required}"
 release_arch="${3:?target architecture required}"
 release_output="${4:-dist}"
 
-if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo 'Release tags must have the form vMAJOR.MINOR.PATCH' >&2
+if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]; then
+  echo 'Release tags must have the form vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N' >&2
   exit 1
 fi
 if [[ ! "$release_commit" =~ ^[0-9a-f]{7,64}$ ]]; then

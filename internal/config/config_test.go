@@ -201,3 +201,20 @@ func TestRetentionPolicyValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageRequestChecksum(t *testing.T) {
+	t.Setenv("S3_BUCKET", "backups")
+	for _, value := range []string{"", "when_supported", "when_required", "invalid", "WHEN_REQUIRED"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("S3_REQUEST_CHECKSUM", value)
+			cfg, err := LoadStorage()
+			valid := value == "" || value == "when_supported" || value == "when_required"
+			if (err == nil) != valid {
+				t.Fatalf("value=%q error=%v", value, err)
+			}
+			if valid && cfg.RequestChecksum != value {
+				t.Fatalf("policy=%q", cfg.RequestChecksum)
+			}
+		})
+	}
+}
