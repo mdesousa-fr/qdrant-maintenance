@@ -77,7 +77,7 @@ service configuration.
 
 ## Build and test
 
-Requires Go 1.27.3 or newer (patched toolchain).
+Requires Go 1.27.4 or newer (patched toolchain).
 
 ```sh
 go build -o bin/qdrant-maintenance ./cmd/qdrant-maintenance
