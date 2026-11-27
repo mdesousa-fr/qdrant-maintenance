@@ -5,7 +5,7 @@ services:
       - 6333:6333
 
   rustfs:
-    image: rustfs/rustfs:latest@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    image: rustfs/rustfs:latest@sha256:69bd3c4d8d79b74723bfd68c9fbd9085155d4d4b44a5a136d87502f3075cc68c
     environment:
       RUSTFS_ACCESS_KEY: qdrant
       RUSTFS_SECRET_KEY: qdrant-secret
